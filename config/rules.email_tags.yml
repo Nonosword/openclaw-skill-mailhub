@@ -1,0 +1,27 @@
+labels:
+  spam:
+    any:
+      - header_regex: "(?i)X-Spam-Flag:\\s*YES"
+      - subject_regex: "(?i)viagra|casino|lottery|free money"
+  security:
+    any:
+      - from_regex: "(?i)no-reply@accounts\\.google\\.com|account-security@|security@"
+      - subject_regex: "(?i)security alert|sign-in|verification|password"
+  bills:
+    any:
+      - subject_regex: "(?i)statement|bill|invoice|credit card|payment due"
+      - from_regex: "(?i)bank|card|amex|chase|citi|hsbc|visa|mastercard"
+  receipts:
+    any:
+      - subject_regex: "(?i)receipt|order|shipped|delivered"
+  ads:
+    any:
+      - list_unsubscribe_present: true
+      - from_regex: "(?i)marketing|newsletter"
+  personal:
+    any:
+      - from_in_contacts: true
+  work:
+    any:
+      - to_domain_regex: "(?i)@yourcompany\\.com"
+default: other

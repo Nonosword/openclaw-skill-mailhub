@@ -1,0 +1,8 @@
+reply_needed:
+  any:
+    - subject_regex: "(?i)please reply|action required|need your input|approve|confirm"
+    - body_regex: "(?i)can you|could you|would you|let me know"
+suppress_if:
+  any:
+    - from_regex: "(?i)no-reply@|do-not-reply@"
+    - header_regex: "(?i)Auto-Submitted:\\s*auto-generated"

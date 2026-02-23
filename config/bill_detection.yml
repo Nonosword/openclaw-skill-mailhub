@@ -1,0 +1,5 @@
+# Optional extension rules for bill detection beyond generic tag rules.
+issuers:
+  - name: amex
+    from_regex: "(?i)american express|amex"
+    subject_regex: "(?i)statement|payment due"

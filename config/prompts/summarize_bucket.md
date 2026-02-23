@@ -1,0 +1,1 @@
+Summarize a bucket of emails in 3-5 bullets. Focus on what the user needs to know.
