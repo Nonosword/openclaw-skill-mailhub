@@ -15,20 +15,22 @@ export MAILHUB_STATE_DIR="$HOME/.openclaw/state/mailhub"
 mailhub doctor
 ```
 
-### 3) Link an account
-IMAP/SMTP (recommended to start)
-```bashmailhub auth imap --email you@example.com --imap-host imap.example.com --smtp-host smtp.example.com
+### 3) Link accounts
+IMAP/SMTP (recommended to start):
+```bash
+mailhub auth imap --email you@example.com --imap-host imap.example.com --smtp-host smtp.example.com
 ```
-Google (OAuth)
-Set env:
-- GOOGLE_OAUTH_CLIENT_ID
-- optionally GOOGLE_OAUTH_CLIENT_SECRET (public clients may omit secret)
+
+Google (OAuth browser flow + PKCE):
+- Preferred: run `mailhub wizard wizard` and save OAuth Client ID in settings.
+- Fallback: set `GOOGLE_OAUTH_CLIENT_ID` (optional `GOOGLE_OAUTH_CLIENT_SECRET` for confidential clients).
 ```bash
 mailhub auth google --scopes gmail,calendar,contacts
-Microsoft (OAuth device code)
 ```
-Set env:
-- MS_OAUTH_CLIENT_ID
+
+Microsoft (OAuth device code flow):
+- Preferred: run `mailhub wizard wizard` and save OAuth Client ID in settings.
+- Fallback: set `MS_OAUTH_CLIENT_ID`.
 ```bash
 mailhub auth microsoft --scopes mail,calendar,contacts
 ```
@@ -46,14 +48,15 @@ mailhub reply prepare --index 1
 mailhub reply send --index 1 --confirm-text "yes send"
 ```
 
-### Security
+## Security
 
 - Never store passwords in plaintext.
 - IMAP/SMTP uses app-specific passwords entered locally.
 - OAuth tokens stored via OS keychain when possible; else encrypted local file.
 
-### Notes
+## Notes
+
 This repo provides a safe MVP skeleton. You should review and adjust scopes, disclosure line, and provider-specific policies for your deployment.
 
-
 ## LICENSE（MIT）
+See `LICENSE`.

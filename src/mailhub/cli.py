@@ -123,15 +123,28 @@ def settings_show():
 
 @app.command()
 def settings_set(key: str, value: str):
-    """Set a toggle key in settings."""
+    """Set a settings key. Supports toggles.<key> (default) and oauth.<key>."""
     s = Settings.load()
-    if not hasattr(s.toggles, key):
+
+    target = s.toggles
+    attr = key
+    if "." in key:
+        ns, attr = key.split(".", 1)
+        if ns == "toggles":
+            target = s.toggles
+        elif ns == "oauth":
+            target = s.oauth
+        else:
+            raise typer.BadParameter(f"Unknown settings namespace: {ns}")
+
+    if not hasattr(target, attr):
         raise typer.BadParameter(f"Unknown key: {key}")
-    # basic typing
-    cur = getattr(s.toggles, key)
+
+    cur = getattr(target, attr)
     if isinstance(cur, int):
-        setattr(s.toggles, key, int(value))
+        setattr(target, attr, int(value))
     else:
-        setattr(s.toggles, key, value)
+        setattr(target, attr, value)
+
     s.save()
     console.print({"ok": True, "set": {key: value}})

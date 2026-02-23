@@ -1,6 +1,6 @@
 [project]
 name = "mailhub"
-version = "0.3.1"
+version = "0.3.3"
 description = "Unified email/calendar/contacts connector for OpenClaw skill MailHub"
 requires-python = ">=3.10"
 dependencies = [

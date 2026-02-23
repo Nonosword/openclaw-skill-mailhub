@@ -1,7 +1,7 @@
 ---
 name: mailhub
 description: Unified email/calendar/contacts assistant with safe account linking, triage, reminders, replies, scheduling, and credit-card bill analysis.
-version: 0.3.1
+version: 0.3.3
 metadata:
   openclaw:
     emoji: "📬"

@@ -43,9 +43,9 @@ def auth_microsoft(scopes: str = "mail,calendar,contacts") -> None:
     db = DB(s.db_path)
     db.init()
 
-    client_id = os.environ.get("MS_OAUTH_CLIENT_ID")
+    client_id = s.oauth.ms_client_id or os.environ.get("MS_OAUTH_CLIENT_ID")
     if not client_id:
-        raise RuntimeError("Missing MS_OAUTH_CLIENT_ID env var")
+        raise RuntimeError("Missing Microsoft OAuth client id (settings oauth.ms_client_id or MS_OAUTH_CLIENT_ID env var)")
 
     scope_str = _build_scopes(scopes)
 
@@ -112,9 +112,9 @@ def _refresh_if_needed(pid: str, store: SecretStore) -> str:
             raise RuntimeError("No access token available")
         return access
 
-    client_id = os.environ.get("MS_OAUTH_CLIENT_ID")
+    client_id = Settings.load().oauth.ms_client_id or os.environ.get("MS_OAUTH_CLIENT_ID")
     if not client_id:
-        raise RuntimeError("Missing MS_OAUTH_CLIENT_ID env var")
+        raise RuntimeError("Missing Microsoft OAuth client id (settings oauth.ms_client_id or MS_OAUTH_CLIENT_ID env var)")
 
     tr = requests.post(
         TOKEN_URL,

@@ -4,7 +4,7 @@ import json
 import os
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 DEFAULT_DISCLOSURE = "— Sent by <AgentName> via MailHub"
 
@@ -42,6 +42,7 @@ class Settings:
     secrets_path: Path
 
     toggles: FeatureToggles
+    oauth: OAuthClientConfig
 
     @staticmethod
     def default_state_dir() -> Path:
@@ -59,10 +60,13 @@ class Settings:
         db_path = state_dir / "mailhub.sqlite"
 
         toggles = FeatureToggles()
+        oauth = OAuthClientConfig()
         if settings_path.exists():
             data = json.loads(settings_path.read_text(encoding="utf-8"))
             t = data.get("toggles", {})
             toggles = FeatureToggles(**{**asdict(toggles), **t})
+            o = data.get("oauth", {})
+            oauth = OAuthClientConfig(**{**asdict(oauth), **o})
 
         return cls(
             state_dir=state_dir,
@@ -70,6 +74,7 @@ class Settings:
             settings_path=settings_path,
             secrets_path=secrets_path,
             toggles=toggles,
+            oauth=oauth,
         )
 
     def ensure_dirs(self) -> None:
@@ -79,6 +84,7 @@ class Settings:
         self.ensure_dirs()
         payload: Dict[str, Any] = {
             "toggles": asdict(self.toggles),
+            "oauth": asdict(self.oauth),
         }
         self.settings_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -91,4 +97,5 @@ class Settings:
             "db_path": str(self.db_path),
             "settings_path": str(self.settings_path),
             "toggles": asdict(self.toggles),
+            "oauth": asdict(self.oauth),
         }

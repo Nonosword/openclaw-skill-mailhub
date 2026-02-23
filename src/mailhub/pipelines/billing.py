@@ -52,7 +52,7 @@ def billing_analyze(statement_id: str) -> Dict[str, Any]:
     MVP:
     - find statement candidate by id from today's messages
     - extract minimal info from subject/body
-    - if message contains local file hint, allow pdf extraction by path (future extension)
+    - if message has PDF attachments, parse text via pdfplumber
     """
     s = Settings.load()
     db = DB(s.db_path)
@@ -62,6 +62,14 @@ def billing_analyze(statement_id: str) -> Dict[str, Any]:
     msgs = db.get_messages_by_date(day)
 
     target = None
+    for m in msgs:
+        sid = _statement_id(m["id"], m.get("subject") or "")
+        if sid == statement_id:
+            target = m
+            break
+    if not target:
+        raise RuntimeError("Statement not found for today in MVP. (Extend by searching wider date range.)")
+
     atts = _list_attachments(db, target["id"])
     pdf_text = ""
     for a in atts:
@@ -71,22 +79,11 @@ def billing_analyze(statement_id: str) -> Dict[str, Any]:
             break
 
     text_for_extract = (target.get("body_text") or "") + "\n\n" + (pdf_text or "")
-    total_due, due_date, currency = _extract_amounts(text_for_extract)
+    issuer = _guess_issuer(target.get("from_addr") or "", target.get("subject") or "")
     month = _guess_month(target.get("subject") or "", text_for_extract)
 
-    for m in msgs:
-        sid = _statement_id(m["id"], m.get("subject") or "")
-        if sid == statement_id:
-            target = m
-            break
-    if not target:
-        raise RuntimeError("Statement not found for today in MVP. (Extend by searching wider date range.)")
-
-    issuer = _guess_issuer(target.get("from_addr") or "", target.get("subject") or "")
-    month = _guess_month(target.get("subject") or "", target.get("body_text") or "")
-
     # totals (very heuristic)
-    total_due, due_date, currency = _extract_amounts(target.get("body_text") or "")
+    total_due, due_date, currency = _extract_amounts(text_for_extract)
 
     extracted = {
         "issuer": issuer,

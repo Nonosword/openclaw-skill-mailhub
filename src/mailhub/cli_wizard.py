@@ -1,10 +1,13 @@
 from __future__ import annotations
+
 import typer
 from rich.console import Console
+
 from .config import Settings
 
 app = typer.Typer()
 console = Console()
+
 
 @app.command()
 def wizard():
@@ -15,8 +18,13 @@ def wizard():
     name = typer.prompt("Agent display name", default=s.toggles.agent_display_name)
     s.toggles.agent_display_name = name
 
-    google_id = typer.prompt("Google OAuth Client ID (leave blank to skip)", default="")
-    ms_id = typer.prompt("Microsoft OAuth Client ID (leave blank to skip)", default="")
+    google_id = typer.prompt("Google OAuth Client ID (leave blank to skip)", default=s.oauth.google_client_id)
+    if google_id.strip():
+        s.oauth.google_client_id = google_id.strip()
+
+    ms_id = typer.prompt("Microsoft OAuth Client ID (leave blank to skip)", default=s.oauth.ms_client_id)
+    if ms_id.strip():
+        s.oauth.ms_client_id = ms_id.strip()
 
     alerts = typer.prompt("Mail alerts mode (off|all|suggested)", default=s.toggles.mail_alerts_mode)
     s.toggles.mail_alerts_mode = alerts
@@ -27,7 +35,8 @@ def wizard():
     cal = typer.prompt("Calendar management (off|on)", default=s.toggles.calendar_management)
     s.toggles.calendar_management = cal
     if cal == "on":
-        s.toggles.calendar_days_window = int(typer.prompt("Calendar window days", default=str(s.toggles.calendar_days_window)))
+        s.toggles.calendar_days_window = int(typer.prompt(
+            "Calendar window days", default=str(s.toggles.calendar_days_window)))
 
     bill = typer.prompt("Bill analysis (off|on)", default=s.toggles.bill_analysis)
     s.toggles.bill_analysis = bill

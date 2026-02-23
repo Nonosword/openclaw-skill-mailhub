@@ -78,7 +78,7 @@ def reply_prepare(index: int) -> Dict[str, Any]:
         "queue_id": item["id"],
         "message_id": item["message_id"],
         "preview": {
-            "from": _choose_sender_provider(db).get("email") or "",
+            "from": (_choose_sender_for_message(db, msg.get("provider_id") or "") or {}).get("email") or "",
             "to": to_addr,
             "subject": subj,
             "body": body,
@@ -112,7 +112,7 @@ def reply_send(index: int, confirm_text: str) -> Dict[str, Any]:
         raise RuntimeError("Message not found")
 
     to_addr = _extract_reply_to(msg.get("from_addr") or "")
-    provider = _choose_sender_for_message(db)
+    provider = _choose_sender_for_message(db, msg.get("provider_id") or "")
     if not provider:
         raise RuntimeError("No provider configured to send")
 

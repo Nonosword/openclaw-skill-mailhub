@@ -100,23 +100,23 @@ def normalize_and_store_message(raw: Dict[str, Any], provider_kind: str, raw_sou
         )
         return msg_id
 
-    # IMAP (headers-only MVP)
+    # IMAP (full message preferred when available)
     if provider_kind == "imap":
-        pid = raw.get("provider_id", "imap:unknown")
+        pid = provider_id or raw.get("provider_id", "imap:unknown")
         msg_id = raw.get("id")
         db.upsert_message(
             {
                 "id": msg_id,
                 "provider_id": pid,
-                "thread_id": None,
+                "thread_id": raw.get("thread_id"),
                 "from_addr": raw.get("from_addr"),
                 "to_addrs": raw.get("to_addrs"),
                 "subject": raw.get("subject"),
-                "date_utc": now[:10] + "T00:00:00Z",
-                "snippet": raw.get("snippet") or "",
-                "body_text": None,
-                "body_html": None,
-                "has_attachments": 0,
+                "date_utc": raw.get("date_utc") or now[:10] + "T00:00:00Z",
+                "snippet": (raw.get("snippet") or "")[:500],
+                "body_text": raw.get("body_text"),
+                "body_html": raw.get("body_html"),
+                "has_attachments": int(raw.get("has_attachments", 0)),
                 "raw_json": json.dumps(raw_source)[:500_000],
                 "created_at": now,
             }

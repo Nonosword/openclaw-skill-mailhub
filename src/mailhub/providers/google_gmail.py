@@ -95,7 +95,7 @@ def auth_google(scopes: str = "gmail,calendar,contacts") -> None:
 
     client_id = s.oauth.google_client_id or os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
     if not client_id:
-        raise RuntimeError("Missing GOOGLE_OAUTH_CLIENT_ID env var")
+        raise RuntimeError("Missing Google OAuth client id (settings oauth.google_client_id or GOOGLE_OAUTH_CLIENT_ID env var)")
 
     client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
     redirect_uri = "http://127.0.0.1:8765/callback"
@@ -171,7 +171,7 @@ def _refresh_if_needed(pid: str, store: SecretStore) -> str:
     client_id = s.oauth.google_client_id or os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
     client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
     if not client_id:
-        raise RuntimeError("Missing GOOGLE_OAUTH_CLIENT_ID env var")
+        raise RuntimeError("Missing Google OAuth client id (settings oauth.google_client_id or GOOGLE_OAUTH_CLIENT_ID env var)")
 
     data = {
         "client_id": client_id,
