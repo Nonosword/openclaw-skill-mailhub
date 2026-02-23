@@ -22,6 +22,29 @@ def _choose_sender_provider(db: DB) -> Optional[Dict[str, Any]]:
     return providers[0] if providers else None
 
 
+def _choose_sender_for_message(db: DB, msg_provider_id: str) -> Optional[Dict[str, Any]]:
+    providers = db.list_providers()
+    # try exact provider_id match
+    for p in providers:
+        if p["id"] == msg_provider_id:
+            return p
+    # fallback by kind prefix
+    if msg_provider_id.startswith("google:"):
+        for p in providers:
+            if p["kind"] == "google":
+                return p
+    if msg_provider_id.startswith("microsoft:"):
+        for p in providers:
+            if p["kind"] == "microsoft":
+                return p
+    if msg_provider_id.startswith("imap:"):
+        for p in providers:
+            if p["kind"] == "imap":
+                return p
+    # final fallback: original priority
+    return _choose_sender_provider(db)
+
+
 def _draft_reply(subject: str, body_hint: str, disclosure: str) -> Tuple[str, str]:
     # MVP: rule-based drafting. Replace with LLM prompt later.
     subj = subject.strip()
@@ -50,13 +73,17 @@ def reply_prepare(index: int) -> Dict[str, Any]:
     subj, body = _draft_reply(msg.get("subject") or "", hint, s.disclosure_text())
     db.update_reply_draft(item["id"], subj, body, utc_now_iso())
 
+    to_addr = _extract_reply_to(msg.get("from_addr") or "")
     return {
         "queue_id": item["id"],
         "message_id": item["message_id"],
-        "from": msg.get("from_addr"),
-        "subject": subj,
-        "draft": body,
-        "note": "Use reply send with confirm_text to send.",
+        "preview": {
+            "from": _choose_sender_provider(db).get("email") or "",
+            "to": to_addr,
+            "subject": subj,
+            "body": body,
+        },
+        "note": "Confirm before sending: reply send --confirm-text must include 'send'.",
     }
 
 
@@ -85,7 +112,7 @@ def reply_send(index: int, confirm_text: str) -> Dict[str, Any]:
         raise RuntimeError("Message not found")
 
     to_addr = _extract_reply_to(msg.get("from_addr") or "")
-    provider = _choose_sender_provider(db)
+    provider = _choose_sender_for_message(db)
     if not provider:
         raise RuntimeError("No provider configured to send")
 

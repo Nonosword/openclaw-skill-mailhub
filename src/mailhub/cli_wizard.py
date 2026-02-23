@@ -15,6 +15,9 @@ def wizard():
     name = typer.prompt("Agent display name", default=s.toggles.agent_display_name)
     s.toggles.agent_display_name = name
 
+    google_id = typer.prompt("Google OAuth Client ID (leave blank to skip)", default="")
+    ms_id = typer.prompt("Microsoft OAuth Client ID (leave blank to skip)", default="")
+
     alerts = typer.prompt("Mail alerts mode (off|all|suggested)", default=s.toggles.mail_alerts_mode)
     s.toggles.mail_alerts_mode = alerts
 

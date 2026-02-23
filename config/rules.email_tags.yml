@@ -24,4 +24,16 @@ labels:
   work:
     any:
       - to_domain_regex: "(?i)@yourcompany\\.com"
+  finance:
+    any:
+      - subject_regex: "(?i)tax|invoice|refund|payment|transfer|wire|bank|statement"
+      - from_regex: "(?i)paypal|stripe|square|bank|finance|billing"
+  travel:
+    any:
+      - subject_regex: "(?i)itinerary|booking|reservation|flight|hotel|airbnb|uber|lyft|train"
+      - from_regex: "(?i)airlines|booking\\.com|expedia|airbnb|uber|lyft"
+  social:
+    any:
+      - from_regex: "(?i)facebookmail|twitter|x\\.com|linkedin|instagram|tiktok|discord|slack"
+      - subject_regex: "(?i)mentioned you|new follower|invited you|notification"
 default: other

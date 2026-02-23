@@ -23,6 +23,9 @@ app.add_typer(wizard_app, name="wizard")
 def doctor():
     """Basic diagnostics for state dir, db, keychain access."""
     s = Settings.load()
+    s.ensure_dirs()
+    from .store import DB
+    DB(s.db_path).init()
     console.print({"state_dir": str(s.state_dir), "db": str(s.db_path)})
 
 auth_app = typer.Typer()

@@ -28,6 +28,13 @@ class FeatureToggles:
 
 
 @dataclass
+class OAuthClientConfig:
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    ms_client_id: str = ""
+
+
+@dataclass
 class Settings:
     state_dir: Path
     db_path: Path

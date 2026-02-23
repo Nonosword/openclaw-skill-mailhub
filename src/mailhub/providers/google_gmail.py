@@ -4,12 +4,13 @@ import base64
 import json
 import os
 import time
+import hashlib
+import secrets
 import webbrowser
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict, List, Optional
-from urllib.parse import parse_qs, urlparse
-
+from urllib.parse import urlencode, parse_qs, urlparse
 import requests
 
 from ..config import Settings
@@ -76,13 +77,23 @@ def _build_scopes(scopes: str) -> List[str]:
     return sorted(set(out))
 
 
+def _pkce_pair() -> tuple[str, str]:
+    """
+    Returns (code_verifier, code_challenge) for PKCE S256.
+    """
+    verifier = secrets.token_urlsafe(48)  # 43-128 chars recommended
+    digest = hashlib.sha256(verifier.encode("utf-8")).digest()
+    challenge = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    return verifier, challenge
+
+
 def auth_google(scopes: str = "gmail,calendar,contacts") -> None:
     s = Settings.load()
     s.ensure_dirs()
     db = DB(s.db_path)
     db.init()
 
-    client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+    client_id = s.oauth.google_client_id or os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
     if not client_id:
         raise RuntimeError("Missing GOOGLE_OAUTH_CLIENT_ID env var")
 
@@ -90,6 +101,7 @@ def auth_google(scopes: str = "gmail,calendar,contacts") -> None:
     redirect_uri = "http://127.0.0.1:8765/callback"
     scope_list = _build_scopes(scopes)
 
+    verifier, challenge = _pkce_pair()
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -97,6 +109,9 @@ def auth_google(scopes: str = "gmail,calendar,contacts") -> None:
         "scope": " ".join(scope_list),
         "access_type": "offline",
         "prompt": "consent",
+        # PKCE
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
     }
 
     url = requests.Request("GET", GOOGLE_AUTH_URL, params=params).prepare().url
@@ -111,6 +126,7 @@ def auth_google(scopes: str = "gmail,calendar,contacts") -> None:
         "client_secret": client_secret,
         "redirect_uri": redirect_uri,
         "grant_type": "authorization_code",
+        "code_verifier": verifier,
     }
     r = requests.post(GOOGLE_TOKEN_URL, data=data, timeout=30)
     r.raise_for_status()
@@ -140,6 +156,7 @@ def _gmail_get_profile_email(access_token: str) -> str:
 
 
 def _refresh_if_needed(pid: str, store: SecretStore) -> str:
+    s = Settings.load()
     access = store.get(f"{pid}:access_token")
     exp = store.get(f"{pid}:expires_at")
     if access and exp and int(exp) > int(time.time()):
@@ -151,7 +168,7 @@ def _refresh_if_needed(pid: str, store: SecretStore) -> str:
             raise RuntimeError("No access token available")
         return access
 
-    client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+    client_id = s.oauth.google_client_id or os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
     client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
     if not client_id:
         raise RuntimeError("Missing GOOGLE_OAUTH_CLIENT_ID env var")

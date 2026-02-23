@@ -27,10 +27,8 @@ def inbox_poll(since: str = "15m", mode: str = "alerts") -> Dict[str, Any]:
     # IMAP headers only (MVP)
     try:
         imap_full = fetch_and_store_recent_full(since=since)
-        for h in imap_full:
-            # store minimal
-            normalize_and_store_message(h, provider_kind="imap", raw_source=h)
-            collected.extend([{"provider": "imap", **x} for x in imap_full.get("saved", [])])
+        for item in imap_full.get("saved", []):
+            collected.append({"provider": "imap", **item})
     except Exception as e:
         collected.append({"provider": "imap", "error": str(e)})
 
