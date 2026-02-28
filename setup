@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Usage:
+#   ./setup [SKILL_DIR]
+# Example:
+#   ~/.openclaw/skills/mailhub/setup ~/.openclaw/skills/mailhub
+
+SKILL_DIR="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+VENV_DIR="${MAILHUB_VENV_DIR:-${SKILL_DIR}/.venv}"
+STATE_DIR="${MAILHUB_STATE_DIR:-${HOME}/.openclaw/state/mailhub}"
+LAUNCHER="${HOME}/.local/bin/mailhub"
+
+if [[ ! -d "${SKILL_DIR}" ]]; then
+  echo "[setup] skill dir not found: ${SKILL_DIR}" >&2
+  exit 1
+fi
+
+if command -v uv >/dev/null 2>&1; then
+  echo "[setup] using uv to create virtualenv: ${VENV_DIR}"
+  uv venv "${VENV_DIR}"
+  uv pip install --python "${VENV_DIR}/bin/python" -e "${SKILL_DIR}"
+else
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "[setup] python3 is required (or install uv)." >&2
+    exit 1
+  fi
+  echo "[setup] uv not found, falling back to python3 -m venv"
+  python3 -m venv "${VENV_DIR}"
+  "${VENV_DIR}/bin/pip" install -e "${SKILL_DIR}"
+fi
+
+mkdir -p "${STATE_DIR}"
+mkdir -p "$(dirname "${LAUNCHER}")"
+
+cat > "${LAUNCHER}" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export MAILHUB_STATE_DIR="\${MAILHUB_STATE_DIR:-${STATE_DIR}}"
+exec "${VENV_DIR}/bin/mailhub" "\$@"
+EOF
+
+chmod +x "${LAUNCHER}"
+
+echo "[setup] installed launcher: ${LAUNCHER}"
+if [[ ":${PATH}:" != *":${HOME}/.local/bin:"* ]]; then
+  echo "[setup] PATH does not contain ${HOME}/.local/bin"
+  echo "[setup] add this to shell profile:"
+  echo "export PATH=\"${HOME}/.local/bin:\$PATH\""
+fi
+
+echo "[setup] done. test with:"
+echo "mailhub doctor"

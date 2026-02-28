@@ -239,6 +239,17 @@ class DB:
     def enqueue_reply(self, message_id: str, status: str, short_reason: str | None, now: str) -> int:
         con = self.connect()
         try:
+            existing = con.execute(
+                """
+                SELECT id FROM reply_queue
+                WHERE message_id=? AND status IN ('pending', 'sent')
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (message_id,),
+            ).fetchone()
+            if existing:
+                return int(existing["id"])
             cur = con.execute(
                 """
                 INSERT INTO reply_queue (message_id, status, short_reason, created_at, updated_at)
@@ -335,5 +346,30 @@ class DB:
                 (yyyy_mm,),
             ).fetchall()
             return [dict(r) for r in rows]
+        finally:
+            con.close()
+
+    def kv_get(self, key: str) -> Optional[str]:
+        con = self.connect()
+        try:
+            row = con.execute("SELECT v FROM kv WHERE k=?", (key,)).fetchone()
+            return str(row["v"]) if row else None
+        finally:
+            con.close()
+
+    def kv_set(self, key: str, value: str, updated_at: str) -> None:
+        con = self.connect()
+        try:
+            con.execute(
+                """
+                INSERT INTO kv (k, v, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(k) DO UPDATE SET
+                  v=excluded.v,
+                  updated_at=excluded.updated_at
+                """,
+                (key, value, updated_at),
+            )
+            con.commit()
         finally:
             con.close()

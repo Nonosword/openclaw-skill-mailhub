@@ -1,7 +1,7 @@
 ---
 name: mailhub
 description: Unified email/calendar/contacts assistant with safe account linking, triage, reminders, replies, scheduling, and credit-card bill analysis.
-version: 0.3.3
+version: 1.3.6
 metadata:
   openclaw:
     emoji: "📬"
@@ -27,6 +27,8 @@ metadata:
 - The OpenClaw agent (LLM) does: understanding, classification, summarization, drafting.
 - The MailHub CLI does: authentication handoff, storage, sending, provider API calls.
 - Sending or modifying external state requires explicit user confirmation unless auto-send is explicitly enabled.
+- For automation/scheduler integration, use exactly one entrypoint: `mailhub jobs run`.
+- When user asks for system status/health, always use `mailhub doctor` first.
 
 ## Safety (MUST)
 - Never ask for passwords in chat.
@@ -46,34 +48,44 @@ B) Managed OAuth Broker (one-click like iOS/macOS)
 - User clicks a broker URL to login/consent.
 - Broker returns a one-time code.
 - CLI exchanges the code for tokens and stores them locally.
+- Note: broker mode is a forward design; default implementation uses local OAuth/device-code flows.
 
 ### Google (Gmail/Calendar/Contacts)
 - Link via browser:
   mailhub auth google --scopes gmail,calendar,contacts
-- If managed broker is enabled:
-  mailhub auth google --broker
+- If you build broker extension in your deployment, use the broker-specific command set there.
 
 ### Microsoft (Outlook/Calendar/Contacts)
 - Link via device/browser:
   mailhub auth microsoft --scopes mail,calendar,contacts
-- If managed broker is enabled:
-  mailhub auth microsoft --broker
+- If you build broker extension in your deployment, use the broker-specific command set there.
 
 ### Apple/iCloud and 163 (IMAP/SMTP)
 - Use app-specific passwords (local prompt only):
   mailhub auth imap --email <email> --imap-host <host> --smtp-host <host>
 
+### Unified bind entry
+- Preferred account-binding flow:
+  mailhub bind
+- This menu provides numeric options (`1..5`) and routes to Google/Microsoft/IMAP/CalDAV/CardDAV safely.
+
 ## Conversation Setup Wizard
 When user requests setup:
-1) Ask which providers to link (Google/Microsoft preferred; IMAP fallback).
-2) Ask toggles:
+1) Run `mailhub config` (or `mailhub wizard`) and review defaults.
+2) Ask which providers to link (Google/Microsoft preferred; IMAP fallback), then run `mailhub bind`.
+3) Ask toggles:
    - Agent display name (for UI + disclosures)
    - Mail alerts: OFF | ALL | SUGGESTED
-   - Scheduled analysis: OFF | DAILY | WEEKLY
+   - Jobs scheduler: timezone + digest weekdays/times + billing days/times
    - Auto-reply: OFF | ON (auto-send requires explicit opt-in)
    - Calendar management: OFF | ON
    - Bill analysis: OFF | ON
-3) Save settings (via mailhub settings_set or wizard).
+4) Save settings (via `mailhub settings-set` or `mailhub wizard`).
+5) First-run execution must be confirmed once:
+   - `mailhub config`
+   - `mailhub config --confirm`
+6) Start automation with only one command:
+   - `mailhub jobs run`
 
 ## LLM Tasks Contract (STRICT JSON)
 ### Email classification
@@ -95,14 +107,13 @@ If JSON is invalid or missing fields, fallback to rule-based draft.
 ### 3.0 Mail Alerts
 If alerts are enabled:
 - poll new messages:
-  mailhub inbox poll --since "15m"
+  mailhub jobs run
 If mode is SUGGESTED:
 - filter spam/ads and summarize short bullets to the user.
 
 ### 3.1 Daily Mail Analysis
-- ingest + triage:
-  mailhub inbox ingest --date today
-  mailhub triage day --date today
+- automation entry:
+  mailhub jobs run
 Report:
 - total count
 - counts by tag
@@ -122,17 +133,21 @@ Auto-reply:
 ### 3.3 Calendar management
 - agenda:
   mailhub cal agenda --days 3
-- Create/update events (if user requests):
-  mailhub cal create ...
-  mailhub cal update ...
+- Note: create/update event commands are not implemented in current MVP CLI.
 
 ### 3.4 Bill analysis
 - detect statements:
   mailhub billing detect --since "30d"
 - analyze newest:
-  mailhub billing analyze --statement-id <id>
+  mailhub billing analyze <statement_id>
 - monthly rollup:
   mailhub billing month --month "YYYY-MM"
+
+## Operational Routing (Agent Policy)
+- Setup/binding request: `mailhub config` -> `mailhub bind` -> `mailhub jobs run --confirm-config`.
+- Routine automation: only `mailhub jobs run`.
+- Manual single-task request: call existing independent commands (`inbox/triage/reply/billing/cal`).
+- Status/check request: always call `mailhub doctor` and answer from doctor output.
 
 ## Classification Rules
 Use config/rules.email_tags.yml and prompts in config/prompts/.
