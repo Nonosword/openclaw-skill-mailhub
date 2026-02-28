@@ -125,6 +125,11 @@ Return:
 
 If JSON is invalid or missing fields, fallback to rule-based draft.
 
+Agent bridge (A-scheme):
+- Set `MAILHUB_USE_OPENCLAW_AGENT=1` and `MAILHUB_OPENCLAW_AGENT_CMD=<cmd>`.
+- MailHub sends task JSON to command stdin and expects JSON object on stdout.
+- Used for: `classify_email`, `summarize_bucket`, `draft_reply`.
+
 ## Features
 ### 3.0 Mail Alerts
 If alerts are enabled:
@@ -141,12 +146,18 @@ Report:
 - counts by tag
 - overview per tag
 - reply-needed shortlist with indices
+- DB-based daily summary command:
+  mailhub daily-summary
 
 ### 3.2 Replies
 Manual:
 - mailhub reply prepare --index N
 - show draft to user, ask confirmation
 - mailhub reply send --index N --confirm-text "<user confirmation including 'send'>"
+- list interfaces:
+  - mailhub reply sent-list --date today
+  - mailhub reply suggested-list --date today
+  - mailhub reply center
 
 Auto-reply:
 - Only if enabled and user explicitly allowed auto-send:

@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+from ..agent_bridge import classify_email_with_agent, summarize_bucket_with_agent
 from ..config import Settings
 from ..store import DB
 from ..utils.time import utc_now_iso, today_yyyy_mm_dd_utc
@@ -213,6 +214,25 @@ def _eval_any_all(block: Dict[str, Any], ctx: Dict[str, Any]) -> bool:
 
 
 def classify_message(msg: Dict[str, Any], rules: Dict[str, Any]) -> Tuple[str, float, str]:
+    agent_payload = {
+        "subject": msg.get("subject") or "",
+        "from_addr": msg.get("from_addr") or "",
+        "snippet": msg.get("snippet") or "",
+        "body_text": (msg.get("body_text") or "")[:6000],
+    }
+    agent_out = classify_email_with_agent(agent_payload)
+    if agent_out:
+        label = str(agent_out.get("label") or "").strip().lower()
+        conf = agent_out.get("confidence", 0.0)
+        reasons = agent_out.get("reasons") or []
+        if label in {"ads", "personal", "work", "finance", "security", "spam", "receipts", "bills", "travel", "social", "other"}:
+            try:
+                score = float(conf)
+            except Exception:
+                score = 0.7
+            reason = "; ".join([str(x) for x in reasons[:3]]) if isinstance(reasons, list) else "agent classification"
+            return label, max(0.0, min(score, 1.0)), reason or "agent classification"
+
     labels = rules.get("labels", {})
     subject = msg.get("subject") or ""
     body_text = msg.get("body_text") or ""
@@ -296,7 +316,26 @@ def _overview_by_tag(messages: List[Dict[str, Any]], db: DB) -> Dict[str, str]:
 
     out: Dict[str, str] = {}
     for tag, items in buckets.items():
-        # Natural short overview per label (rule-based MVP)
+        agent_out = summarize_bucket_with_agent(
+            {
+                "tag": tag,
+                "items": [
+                    {
+                        "subject": it.get("subject") or "",
+                        "from": it.get("from_addr") or "",
+                        "snippet": it.get("snippet") or "",
+                    }
+                    for it in items[:20]
+                ],
+            }
+        )
+        if agent_out and isinstance(agent_out.get("summary_bullets"), list):
+            bullets = [str(x).strip() for x in agent_out.get("summary_bullets", []) if str(x).strip()]
+            if bullets:
+                out[tag] = " | ".join(bullets[:5])
+                continue
+
+        # Fallback rule-based overview.
         subjects = [it.get("subject") or "" for it in items if it.get("subject")]
         top = "; ".join(subjects[:5])
         out[tag] = f"{len(items)} items. Examples: {top}" if top else f"{len(items)} items."

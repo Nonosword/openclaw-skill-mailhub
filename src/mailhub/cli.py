@@ -19,7 +19,8 @@ from .jobs import (
 from .pipelines.billing import billing_analyze, billing_detect, billing_month
 from .pipelines.calendar import agenda
 from .pipelines.ingest import inbox_ingest_day, inbox_poll
-from .pipelines.reply import reply_auto, reply_prepare, reply_send
+from .pipelines.reply import reply_auto, reply_center, reply_prepare, reply_send, reply_sent_list, reply_suggested_list
+from .pipelines.summary import daily_summary
 from .pipelines.triage import triage_day, triage_suggest
 from .providers.caldav import auth_caldav
 from .providers.carddav import auth_carddav
@@ -82,6 +83,17 @@ def config_cmd(
 @app.command("wizard")
 def wizard_cmd():
     run_wizard()
+
+
+@app.command("daily_summary")
+def daily_summary_cmd(date: str = "today"):
+    _require_first_run_confirmation()
+    console.print(daily_summary(date=date))
+
+
+@app.command("daily-summary")
+def daily_summary_cmd_dash(date: str = "today"):
+    daily_summary_cmd(date=date)
 
 
 @app.command("bind")
@@ -249,6 +261,24 @@ def _reply_send(index: int, confirm_text: str):
 def _reply_auto(since: str = "15m", dry_run: bool = True):
     _require_first_run_confirmation()
     console.print(reply_auto(since=since, dry_run=dry_run))
+
+
+@reply_app.command("sent-list")
+def _reply_sent_list(date: str = "today", limit: int = 50):
+    _require_first_run_confirmation()
+    console.print(reply_sent_list(date=date, limit=limit))
+
+
+@reply_app.command("suggested-list")
+def _reply_suggested_list(date: str = "today", limit: int = 50):
+    _require_first_run_confirmation()
+    console.print(reply_suggested_list(date=date, limit=limit))
+
+
+@reply_app.command("center")
+def _reply_center(date: str = "today"):
+    _require_first_run_confirmation()
+    console.print(reply_center(date=date))
 
 
 cal_app = typer.Typer()

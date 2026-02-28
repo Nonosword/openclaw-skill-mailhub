@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS reply_queue (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   message_id TEXT NOT NULL,
   status TEXT NOT NULL,          -- pending|sent|skipped
+  send_mode TEXT NOT NULL DEFAULT 'manual', -- manual|auto
   short_reason TEXT,
   drafted_subject TEXT,
   drafted_body TEXT,
@@ -105,6 +106,11 @@ class DB:
         con = self.connect()
         try:
             con.executescript(SCHEMA)
+            # Backward-compatible migration for existing DBs.
+            try:
+                con.execute("ALTER TABLE reply_queue ADD COLUMN send_mode TEXT NOT NULL DEFAULT 'manual'")
+            except sqlite3.OperationalError:
+                pass
             con.commit()
         finally:
             con.close()
@@ -303,14 +309,63 @@ class DB:
         finally:
             con.close()
 
-    def mark_reply_status(self, rq_id: int, status: str, now: str) -> None:
+    def mark_reply_status(self, rq_id: int, status: str, now: str, send_mode: str | None = None) -> None:
         con = self.connect()
         try:
-            con.execute(
-                "UPDATE reply_queue SET status=?, updated_at=? WHERE id=?",
-                (status, now, rq_id),
-            )
+            if send_mode:
+                con.execute(
+                    "UPDATE reply_queue SET status=?, send_mode=?, updated_at=? WHERE id=?",
+                    (status, send_mode, now, rq_id),
+                )
+            else:
+                con.execute(
+                    "UPDATE reply_queue SET status=?, updated_at=? WHERE id=?",
+                    (status, now, rq_id),
+                )
             con.commit()
+        finally:
+            con.close()
+
+    def list_reply_queue_by_message_date(self, date_prefix_yyyy_mm_dd: str, status: str, limit: int = 200) -> List[Dict[str, Any]]:
+        con = self.connect()
+        try:
+            rows = con.execute(
+                """
+                SELECT rq.*, m.subject, m.from_addr, m.date_utc, m.provider_id
+                FROM reply_queue rq
+                JOIN messages m ON m.id=rq.message_id
+                WHERE rq.status=? AND m.date_utc LIKE ?
+                ORDER BY rq.updated_at DESC
+                LIMIT ?
+                """,
+                (status, f"{date_prefix_yyyy_mm_dd}%", limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            con.close()
+
+    def reply_status_counts_by_message_date(self, date_prefix_yyyy_mm_dd: str) -> Dict[str, int]:
+        con = self.connect()
+        out: Dict[str, int] = {"pending": 0, "sent": 0, "skipped": 0, "auto_sent": 0}
+        try:
+            rows = con.execute(
+                """
+                SELECT rq.status AS status, rq.send_mode AS send_mode, COUNT(*) AS c
+                FROM reply_queue rq
+                JOIN messages m ON m.id=rq.message_id
+                WHERE m.date_utc LIKE ?
+                GROUP BY rq.status, rq.send_mode
+                """,
+                (f"{date_prefix_yyyy_mm_dd}%",),
+            ).fetchall()
+            for r in rows:
+                status = r["status"]
+                c = int(r["c"])
+                if status in out:
+                    out[status] += c
+                if status == "sent" and (r["send_mode"] or "") == "auto":
+                    out["auto_sent"] += c
+            return out
         finally:
             con.close()
 

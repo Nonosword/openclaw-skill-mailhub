@@ -18,6 +18,7 @@ from .pipelines.ingest import inbox_poll
 from .pipelines.triage import triage_day, triage_suggest
 from .pipelines.reply import reply_auto
 from .pipelines.billing import billing_analyze, billing_detect, billing_month
+from .pipelines.summary import daily_summary
 
 
 def config_checklist(s: Settings) -> Dict[str, Any]:
@@ -211,6 +212,9 @@ def run_jobs(since: str | None = None) -> Dict[str, Any]:
 
     if s.toggles.mail_alerts_mode in ("all", "suggested"):
         out["steps"]["alerts"] = triage_suggest(since=effective_since)
+
+    # Always produce a DB-based daily summary for status visibility.
+    out["steps"]["daily_summary"] = daily_summary("today")
 
     if s.toggles.auto_reply == "on":
         out["steps"]["auto_reply"] = reply_auto(

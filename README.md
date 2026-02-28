@@ -101,6 +101,41 @@ Recommended schedule:
 */15 * * * * mailhub jobs run
 ```
 
+### 5) Daily summary and reply queues
+### 5）每日总结与回复队列
+
+```bash
+mailhub daily-summary
+mailhub reply sent-list --date today
+mailhub reply suggested-list --date today
+mailhub reply center
+```
+
+`daily-summary` reports:
+`daily-summary` 输出包括：
+- total and by-type counts
+- 总数和按类型统计
+- replied / suggested-not-replied / auto-replied
+- 已回复 / 建议未回复 / 自动回复统计
+- replied list and suggested-not-replied list
+- 已回复列表与建议未回复列表
+
+### 6) A-scheme agent inference bridge
+### 6）A 方案 Agent 推理桥接
+
+MailHub can hand email content to an OpenClaw-side agent command for classification, bucket summary and reply draft.
+MailHub 可将邮件内容交给 OpenClaw 侧 agent 命令做分类、分组总结与回复草拟。
+
+Enable with env:
+使用环境变量启用：
+```bash
+export MAILHUB_USE_OPENCLAW_AGENT=1
+export MAILHUB_OPENCLAW_AGENT_CMD="<your-openclaw-agent-json-command>"
+```
+
+Input payload is JSON via stdin; command must return a JSON object on stdout.
+输入为 stdin JSON，命令需在 stdout 返回 JSON 对象。
+
 ## Multi-Account Data Model
 ## 多账号数据模型
 
