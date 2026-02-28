@@ -109,6 +109,8 @@ mkdir -p "$(dirname "${LAUNCHER}")"
 cat > "${LAUNCHER}" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+export MAILHUB_SKILL_DIR="${SKILL_DIR}"
+export MAILHUB_ENV_FILE="\${MAILHUB_ENV_FILE:-${SKILL_DIR}/.env}"
 if [[ "${SOURCE_MODE}" == "env" ]]; then
   ENV_FILE="${SKILL_DIR}/.env"
   if [[ -f "\${ENV_FILE}" ]]; then

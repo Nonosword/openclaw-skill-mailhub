@@ -57,9 +57,11 @@ def _print_std_error(exc: Exception, stage: str) -> None:
 
 
 @app.command("doctor")
-def doctor():
+def doctor(
+    all: bool = typer.Option(False, "--all", "-a", help="Show full doctor output including paths/account details."),
+):
     """Comprehensive diagnostics for state/config/provider readiness."""
-    console.print(doctor_report())
+    console.print(doctor_report(full=all))
 
 
 @app.command("config")

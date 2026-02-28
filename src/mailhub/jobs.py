@@ -82,7 +82,7 @@ def mark_config_reviewed() -> Dict[str, Any]:
     }
 
 
-def doctor_report() -> Dict[str, Any]:
+def doctor_report(*, full: bool = False) -> Dict[str, Any]:
     s = Settings.load()
     checks: List[Dict[str, Any]] = []
     warnings: List[str] = []
@@ -142,7 +142,7 @@ def doctor_report() -> Dict[str, Any]:
             }
         )
 
-    return {
+    report = {
         "ok": len(errors) == 0,
         "version": {"mailhub": __version__, "python": platform.python_version()},
         "errors": errors,
@@ -162,6 +162,24 @@ def doctor_report() -> Dict[str, Any]:
         },
         "db_stats": db_stats,
     }
+    if full:
+        return report
+
+    # Compact/default view for user-facing status checks.
+    compact_checks: List[Dict[str, Any]] = []
+    for c in report["checks"]:
+        item = {"name": c.get("name"), "ok": c.get("ok")}
+        if "error" in c:
+            item["error"] = c.get("error")
+        compact_checks.append(item)
+    report["checks"] = compact_checks
+
+    providers = report.get("providers", {})
+    providers.pop("items", None)
+    providers.pop("secret_hints", None)
+    report["providers"] = providers
+    report.pop("accounts", None)
+    return report
 
 
 def run_jobs(since: str | None = None) -> Dict[str, Any]:

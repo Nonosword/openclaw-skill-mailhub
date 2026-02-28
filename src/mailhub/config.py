@@ -124,14 +124,59 @@ class Settings:
             "runtime": asdict(self.runtime),
         }
 
+    def _dotenv_value(self, key: str) -> str:
+        # Priority: explicit env file -> cwd .env -> skill dir .env (if launcher exports) -> ""
+        candidates: list[Path] = []
+        env_file = (os.environ.get("MAILHUB_ENV_FILE") or "").strip()
+        if env_file:
+            candidates.append(Path(os.path.expandvars(env_file)).expanduser())
+        candidates.append(Path.cwd() / ".env")
+        skill_dir = (os.environ.get("MAILHUB_SKILL_DIR") or "").strip()
+        if skill_dir:
+            candidates.append(Path(os.path.expandvars(skill_dir)).expanduser() / ".env")
+
+        for p in candidates:
+            if not p.exists() or not p.is_file():
+                continue
+            try:
+                for line in p.read_text(encoding="utf-8").splitlines():
+                    raw = line.strip()
+                    if not raw or raw.startswith("#") or "=" not in raw:
+                        continue
+                    k, v = raw.split("=", 1)
+                    if k.strip() != key:
+                        continue
+                    val = v.strip()
+                    if len(val) >= 2 and ((val[0] == '"' and val[-1] == '"') or (val[0] == "'" and val[-1] == "'")):
+                        val = val[1:-1]
+                    return val.strip()
+            except Exception:
+                continue
+        return ""
+
     def effective_google_client_id(self) -> str:
-        return (os.environ.get("GOOGLE_OAUTH_CLIENT_ID") or self.oauth.google_client_id or "").strip()
+        return (
+            os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+            or self.oauth.google_client_id
+            or self._dotenv_value("GOOGLE_OAUTH_CLIENT_ID")
+            or ""
+        ).strip()
 
     def effective_google_client_secret(self) -> str:
-        return (os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET") or self.oauth.google_client_secret or "").strip()
+        return (
+            os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
+            or self.oauth.google_client_secret
+            or self._dotenv_value("GOOGLE_OAUTH_CLIENT_SECRET")
+            or ""
+        ).strip()
 
     def effective_ms_client_id(self) -> str:
-        return (os.environ.get("MS_OAUTH_CLIENT_ID") or self.oauth.ms_client_id or "").strip()
+        return (
+            os.environ.get("MS_OAUTH_CLIENT_ID")
+            or self.oauth.ms_client_id
+            or self._dotenv_value("MS_OAUTH_CLIENT_ID")
+            or ""
+        ).strip()
 
 
 def _filter_dataclass_kwargs(dc: type[Any], data: Dict[str, Any]) -> Dict[str, Any]:

@@ -75,6 +75,12 @@ OAuth 应用凭证是全局默认值；一个 client 可以授权多个 Google/M
 Credential precedence: CLI flags > environment variables > settings file.
 凭证优先级：CLI 参数 > 环境变量 > settings 文件。
 
+`mailhub wizard` now includes a hidden prompt for Google OAuth Client Secret (or uses `GOOGLE_OAUTH_CLIENT_SECRET` when provided).
+`mailhub wizard` 现已包含 Google OAuth Client Secret 的隐藏输入引导（若设置了 `GOOGLE_OAUTH_CLIENT_SECRET` 则优先使用环境变量）。
+
+If `.env` is present, MailHub can read it directly (via launcher `MAILHUB_ENV_FILE`) even when values were not exported.
+如果存在 `.env`，即使变量未 `export`，MailHub 也可通过启动器 `MAILHUB_ENV_FILE` 直接读取。
+
 List/update bound accounts:
 查看/更新已绑定账号：
 ```bash
@@ -121,6 +127,7 @@ Alias-first display policy:
 
 ```bash
 mailhub doctor
+mailhub doctor --all
 ```
 
 Doctor returns JSON with:
@@ -133,6 +140,9 @@ doctor 以 JSON 返回：
 - provider 列表 + account 列表
 - db stats
 - 数据库统计
+
+Default `doctor` is compact (no paths/provider ids/secret hints/accounts); use `--all` (or `-a`) for full details.
+默认 `doctor` 为精简输出（不含 path/provider id/secret_hints/accounts）；使用 `--all`（或 `-a`）查看完整细节。
 
 ## Privacy & Security
 ## 隐私与安全

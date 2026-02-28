@@ -97,6 +97,13 @@ def bind_provider(
             s.oauth.google_client_id = google_client_id.strip()
         if google_client_secret:
             s.oauth.google_client_secret = google_client_secret.strip()
+        if not s.effective_google_client_id():
+            raise RuntimeError("Google OAuth client id is required. Set GOOGLE_OAUTH_CLIENT_ID or run `mailhub config --wizard`.")
+        if not (google_client_secret or s.effective_google_client_secret()):
+            raise RuntimeError(
+                "Google OAuth client secret is required in this flow. "
+                "Set GOOGLE_OAUTH_CLIENT_SECRET (exported) or run `mailhub config --wizard`."
+            )
         s.save()
         auth_google(
             scopes=(scopes or "gmail,calendar,contacts"),
@@ -271,16 +278,27 @@ def _print_accounts(db: DB) -> None:
 
 
 def _ensure_google_client(s: Settings) -> None:
+    changed = False
     if s.effective_google_client_id():
         if os.environ.get("GOOGLE_OAUTH_CLIENT_ID"):
             typer.echo("Using GOOGLE_OAUTH_CLIENT_ID from environment.")
-        return
-    cid = typer.prompt("Google OAuth Client ID")
-    secret = getpass.getpass("Google OAuth Client Secret (optional, hidden input): ").strip()
-    s.oauth.google_client_id = cid.strip()
-    if secret:
+    else:
+        cid = typer.prompt("Google OAuth Client ID")
+        s.oauth.google_client_id = cid.strip()
+        changed = True
+
+    if s.effective_google_client_secret():
+        if os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET"):
+            typer.echo("Using GOOGLE_OAUTH_CLIENT_SECRET from environment.")
+    else:
+        secret = getpass.getpass("Google OAuth Client Secret (hidden input, required): ").strip()
+        if not secret:
+            raise RuntimeError("Google OAuth Client Secret is required.")
         s.oauth.google_client_secret = secret
-    s.save()
+        changed = True
+
+    if changed:
+        s.save()
 
 
 def _ensure_ms_client(s: Settings) -> None:

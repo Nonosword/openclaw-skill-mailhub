@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import getpass
+import os
+
 import typer
 from rich.console import Console
 
@@ -22,13 +25,25 @@ def run_wizard() -> dict:
     name = typer.prompt("Agent display name", default=s.toggles.agent_display_name)
     s.toggles.agent_display_name = name
 
-    google_id = typer.prompt("Google OAuth Client ID (leave blank to skip)", default=s.oauth.google_client_id)
+    google_id_default = s.effective_google_client_id() or s.oauth.google_client_id
+    google_id = typer.prompt("Google OAuth Client ID (leave blank to skip)", default=google_id_default)
     if google_id.strip():
         s.oauth.google_client_id = google_id.strip()
 
-    ms_id = typer.prompt("Microsoft OAuth Client ID (leave blank to skip)", default=s.oauth.ms_client_id)
+    google_secret_env = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+    if google_secret_env:
+        console.print("[dim]Google OAuth Client Secret: using GOOGLE_OAUTH_CLIENT_SECRET from environment.[/dim]")
+    else:
+        console.print("[dim]Google OAuth Client Secret is optional for setup, but may be required by token exchange.[/dim]")
+        secret = getpass.getpass("Google OAuth Client Secret (hidden, blank keeps current): ").strip()
+        if secret:
+            s.oauth.google_client_secret = secret
+
+    ms_id_default = s.effective_ms_client_id() or s.oauth.ms_client_id
+    ms_id = typer.prompt("Microsoft OAuth Client ID (leave blank to skip)", default=ms_id_default)
     if ms_id.strip():
         s.oauth.ms_client_id = ms_id.strip()
+    console.print("[dim]Microsoft OAuth in current flow uses device code and does not require client secret.[/dim]")
 
     alerts = typer.prompt("Mail alerts mode (off|all|suggested)", default=s.toggles.mail_alerts_mode)
     s.toggles.mail_alerts_mode = alerts
