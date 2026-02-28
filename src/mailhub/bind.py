@@ -23,11 +23,31 @@ def bind_menu() -> Dict[str, Any]:
     """
     s = Settings.load()
     s.ensure_dirs()
-    if not sys.stdin.isatty():
-        raise RuntimeError("Interactive bind menu needs a TTY. Use `mailhub bind --provider ...` or `mailhub bind --list`.")
-
     db = DB(s.db_path)
     db.init()
+    accounts = list_accounts(db, hide_email_when_alias=False)
+    menu = {
+        "1": "google",
+        "2": "microsoft",
+        "3": "imap",
+        "4": "caldav",
+        "5": "carddav",
+        "0": "exit",
+    }
+    if not sys.stdin.isatty():
+        return {
+            "ok": False,
+            "reason": "interactive_tty_required",
+            "message": "Interactive bind menu needs a TTY session.",
+            "accounts": accounts,
+            "menu": menu,
+            "next_steps": [
+                "mailhub bind --provider google --google-client-id \"<CLIENT_ID>\" --scopes all",
+                "mailhub bind --provider google --google-client-id \"<CLIENT_ID>\" --scopes all --google-code \"<CODE_OR_CALLBACK_URL>\"",
+                "mailhub bind --provider microsoft --ms-client-id \"<CLIENT_ID>\" --scopes all",
+                "mailhub bind --provider imap --email <email> --imap-host <host> --smtp-host <host>",
+            ],
+        }
 
     typer.echo("")
     typer.echo("MailHub account binding")
@@ -46,7 +66,7 @@ def bind_menu() -> Dict[str, Any]:
         return _bind_add_choice(choice)
     if choice == "6":
         return _bind_modify_choice(db)
-    return {"ok": True, "bound": None, "message": "No change"}
+    return {"ok": True, "bound": None, "message": "No change", "accounts": accounts, "menu": menu}
 
 
 def bind_provider(
@@ -54,6 +74,7 @@ def bind_provider(
     scopes: str | None = None,
     google_client_id: str | None = None,
     google_client_secret: str | None = None,
+    google_code: str | None = None,
     ms_client_id: str | None = None,
     email: str | None = None,
     imap_host: str | None = None,
@@ -85,6 +106,7 @@ def bind_provider(
             is_contacts=True if is_contacts is None else bool(is_contacts),
             client_id_override=(google_client_id or "").strip(),
             client_secret_override=(google_client_secret or "").strip(),
+            manual_code=(google_code or "").strip(),
         )
         return {"ok": True, "bound": "google"}
 
@@ -178,13 +200,14 @@ def _bind_add_choice(choice: str) -> Dict[str, Any]:
         s = Settings.load()
         _ensure_google_client(s)
         alias = typer.prompt("Alias (optional)", default="")
-        scopes = typer.prompt("Scopes (comma separated)", default="gmail,calendar,contacts")
+        scopes = typer.prompt("Scopes (comma separated, or 'all')", default="gmail,calendar,contacts")
+        typer.echo("Google OAuth will open in browser. Keep this terminal running until callback completes.")
         return bind_provider(provider="google", scopes=scopes, alias=alias)
     if choice == "2":
         s = Settings.load()
         _ensure_ms_client(s)
         alias = typer.prompt("Alias (optional)", default="")
-        scopes = typer.prompt("Scopes (comma separated)", default="mail,calendar,contacts")
+        scopes = typer.prompt("Scopes (comma separated, or 'all')", default="mail,calendar,contacts")
         return bind_provider(provider="microsoft", scopes=scopes, alias=alias)
     if choice == "3":
         email = typer.prompt("Email address")
@@ -248,11 +271,9 @@ def _print_accounts(db: DB) -> None:
 
 
 def _ensure_google_client(s: Settings) -> None:
-    if s.oauth.google_client_id:
-        return
-    current = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
-    if current:
-        typer.echo("Using GOOGLE_OAUTH_CLIENT_ID from environment.")
+    if s.effective_google_client_id():
+        if os.environ.get("GOOGLE_OAUTH_CLIENT_ID"):
+            typer.echo("Using GOOGLE_OAUTH_CLIENT_ID from environment.")
         return
     cid = typer.prompt("Google OAuth Client ID")
     secret = getpass.getpass("Google OAuth Client Secret (optional, hidden input): ").strip()
@@ -263,11 +284,9 @@ def _ensure_google_client(s: Settings) -> None:
 
 
 def _ensure_ms_client(s: Settings) -> None:
-    if s.oauth.ms_client_id:
-        return
-    current = os.environ.get("MS_OAUTH_CLIENT_ID", "")
-    if current:
-        typer.echo("Using MS_OAUTH_CLIENT_ID from environment.")
+    if s.effective_ms_client_id():
+        if os.environ.get("MS_OAUTH_CLIENT_ID"):
+            typer.echo("Using MS_OAUTH_CLIENT_ID from environment.")
         return
     cid = typer.prompt("Microsoft OAuth Client ID")
     s.oauth.ms_client_id = cid.strip()

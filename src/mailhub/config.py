@@ -66,7 +66,7 @@ class Settings:
     def default_state_dir() -> Path:
         p = os.environ.get("MAILHUB_STATE_DIR")
         if p:
-            return Path(p).expanduser()
+            return Path(os.path.expandvars(p)).expanduser()
         # fallback
         return Path.home() / ".openclaw" / "state" / "mailhub"
 
@@ -123,6 +123,15 @@ class Settings:
             "oauth": asdict(self.oauth),
             "runtime": asdict(self.runtime),
         }
+
+    def effective_google_client_id(self) -> str:
+        return (os.environ.get("GOOGLE_OAUTH_CLIENT_ID") or self.oauth.google_client_id or "").strip()
+
+    def effective_google_client_secret(self) -> str:
+        return (os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET") or self.oauth.google_client_secret or "").strip()
+
+    def effective_ms_client_id(self) -> str:
+        return (os.environ.get("MS_OAUTH_CLIENT_ID") or self.oauth.ms_client_id or "").strip()
 
 
 def _filter_dataclass_kwargs(dc: type[Any], data: Dict[str, Any]) -> Dict[str, Any]:

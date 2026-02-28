@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from typing import Any, Dict
 import typer
 from rich.console import Console
 
@@ -37,6 +39,23 @@ def _require_first_run_confirmation() -> None:
         raise typer.Exit(code=2)
 
 
+def _print_std_error(exc: Exception, stage: str) -> None:
+    msg = str(exc).strip()
+    payload: Dict[str, Any] = {
+        "ok": False,
+        "stage": stage,
+        "error_type": exc.__class__.__name__,
+        "message": msg,
+    }
+    if msg.startswith("{"):
+        try:
+            payload["details"] = json.loads(msg)
+        except Exception:
+            payload["details_raw"] = msg
+    console.print(payload)
+    raise typer.Exit(code=1)
+
+
 @app.command("doctor")
 def doctor():
     """Comprehensive diagnostics for state/config/provider readiness."""
@@ -72,6 +91,7 @@ def bind_cmd(
     scopes: str | None = typer.Option(None, "--scopes", help="OAuth scopes, e.g. gmail,calendar,contacts"),
     google_client_id: str | None = typer.Option(None, "--google-client-id", help="Google OAuth client id."),
     google_client_secret: str | None = typer.Option(None, "--google-client-secret", help="Google OAuth client secret."),
+    google_code: str | None = typer.Option(None, "--google-code", help="Manual Google OAuth code (or callback URL)."),
     ms_client_id: str | None = typer.Option(None, "--ms-client-id", help="Microsoft OAuth client id."),
     email: str | None = typer.Option(None, "--email", help="Email for IMAP binding."),
     imap_host: str | None = typer.Option(None, "--imap-host", help="IMAP host for IMAP binding."),
@@ -104,26 +124,33 @@ def bind_cmd(
         )
         return
     if provider:
-        console.print(
-            bind_provider(
-                provider=provider,
-                scopes=scopes,
-                google_client_id=google_client_id,
-                google_client_secret=google_client_secret,
-                ms_client_id=ms_client_id,
-                email=email,
-                imap_host=imap_host,
-                smtp_host=smtp_host,
-                username=username,
-                host=host,
-                alias=alias,
-                is_mail=is_mail,
-                is_calendar=is_calendar,
-                is_contacts=is_contacts,
+        try:
+            console.print(
+                bind_provider(
+                    provider=provider,
+                    scopes=scopes,
+                    google_client_id=google_client_id,
+                    google_client_secret=google_client_secret,
+                    google_code=google_code,
+                    ms_client_id=ms_client_id,
+                    email=email,
+                    imap_host=imap_host,
+                    smtp_host=smtp_host,
+                    username=username,
+                    host=host,
+                    alias=alias,
+                    is_mail=is_mail,
+                    is_calendar=is_calendar,
+                    is_contacts=is_contacts,
+                )
             )
-        )
+        except Exception as exc:
+            _print_std_error(exc, "bind")
         return
-    console.print(bind_menu())
+    try:
+        console.print(bind_menu())
+    except Exception as exc:
+        _print_std_error(exc, "bind")
 
 
 auth_app = typer.Typer()
@@ -131,10 +158,13 @@ app.add_typer(auth_app, name="auth")
 
 
 @auth_app.command("google")
-def _auth_google(scopes: str = "gmail,calendar,contacts"):
+def _auth_google(scopes: str = "gmail,calendar,contacts", code: str = ""):
     _require_first_run_confirmation()
     Settings.load().ensure_dirs()
-    auth_google(scopes=scopes)
+    try:
+        auth_google(scopes=scopes, manual_code=code)
+    except Exception as exc:
+        _print_std_error(exc, "auth_google")
 
 
 @auth_app.command("microsoft")

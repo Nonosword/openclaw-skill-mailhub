@@ -24,6 +24,8 @@ def config_checklist(s: Settings) -> Dict[str, Any]:
     db = DB(s.db_path)
     db.init()
     accounts = list_accounts(db, hide_email_when_alias=True)
+    google_env = bool(os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip())
+    ms_env = bool(os.environ.get("MS_OAUTH_CLIENT_ID", "").strip())
     return {
         "reviewed": s.runtime.config_reviewed,
         "confirmed": s.runtime.config_confirmed,
@@ -33,8 +35,10 @@ def config_checklist(s: Settings) -> Dict[str, Any]:
         "settings": {
             "toggles": asdict(s.toggles),
             "oauth_defaults": {
-                "google_client_id_set": bool(s.oauth.google_client_id),
-                "ms_client_id_set": bool(s.oauth.ms_client_id),
+                "google_client_id_set": bool(s.effective_google_client_id()),
+                "google_client_id_source": "env" if google_env else ("settings" if s.oauth.google_client_id else ""),
+                "ms_client_id_set": bool(s.effective_ms_client_id()),
+                "ms_client_id_source": "env" if ms_env else ("settings" if s.oauth.ms_client_id else ""),
             },
             "accounts": {"count": len(accounts)},
         },

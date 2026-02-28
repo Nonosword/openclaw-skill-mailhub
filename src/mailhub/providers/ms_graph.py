@@ -27,6 +27,8 @@ SCOPE_MAP = {
 
 def _build_scopes(scopes: str) -> str:
     parts = [p.strip().lower() for p in scopes.split(",") if p.strip()]
+    if "all" in parts:
+        parts = list(SCOPE_MAP.keys())
     s: List[str] = []
     for p in parts:
         s.extend(SCOPE_MAP.get(p, []))
@@ -51,7 +53,7 @@ def auth_microsoft(
     db = DB(s.db_path)
     db.init()
 
-    client_id = client_id_override or s.oauth.ms_client_id or os.environ.get("MS_OAUTH_CLIENT_ID")
+    client_id = (client_id_override or s.effective_ms_client_id()).strip()
     if not client_id:
         raise RuntimeError("Missing Microsoft OAuth client id (settings oauth.ms_client_id or MS_OAUTH_CLIENT_ID env var)")
 
@@ -140,7 +142,7 @@ def _refresh_if_needed(pid: str, store: SecretStore) -> str:
             raise RuntimeError("No access token available")
         return access
 
-    client_id = Settings.load().oauth.ms_client_id or os.environ.get("MS_OAUTH_CLIENT_ID")
+    client_id = Settings.load().effective_ms_client_id()
     if not client_id:
         raise RuntimeError("Missing Microsoft OAuth client id (settings oauth.ms_client_id or MS_OAUTH_CLIENT_ID env var)")
 

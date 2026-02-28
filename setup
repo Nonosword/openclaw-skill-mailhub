@@ -2,11 +2,84 @@
 set -euo pipefail
 
 # Usage:
+#   ./setup --dir <SKILL_DIR> [--source env]
 #   ./setup [SKILL_DIR]
 # Example:
-#   ~/.openclaw/skills/mailhub/setup ~/.openclaw/skills/mailhub
+#   ~/.openclaw/skills/mailhub/setup --dir ~/.openclaw/skills/mailhub --source env
 
-SKILL_DIR="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+usage() {
+  cat <<'EOF'
+Usage:
+  setup --dir <SKILL_DIR> [--source env]
+  setup [SKILL_DIR]
+
+Options:
+  --dir <path>     Skill working directory (default: script directory).
+  --source env     Load <SKILL_DIR>/.env during setup and in launcher runtime.
+  -h, --help       Show this help.
+EOF
+}
+
+SKILL_DIR=""
+SOURCE_MODE="none"
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dir)
+      [[ $# -ge 2 ]] || { echo "[setup] --dir requires a path" >&2; exit 2; }
+      SKILL_DIR="$2"
+      shift 2
+      ;;
+    --source)
+      [[ $# -ge 2 ]] || { echo "[setup] --source requires a value" >&2; exit 2; }
+      SOURCE_MODE="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --*)
+      echo "[setup] unknown option: $1" >&2
+      usage
+      exit 2
+      ;;
+    *)
+      POSITIONAL+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ -z "${SKILL_DIR}" ]]; then
+  if [[ ${#POSITIONAL[@]} -gt 0 ]]; then
+    SKILL_DIR="${POSITIONAL[0]}"
+  else
+    SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  fi
+fi
+
+case "${SOURCE_MODE}" in
+  none|env) ;;
+  *)
+    echo "[setup] unsupported --source value: ${SOURCE_MODE} (supported: env)" >&2
+    exit 2
+    ;;
+esac
+
+if [[ "${SOURCE_MODE}" == "env" ]]; then
+  ENV_FILE="${SKILL_DIR}/.env"
+  if [[ -f "${ENV_FILE}" ]]; then
+    echo "[setup] loading env from ${ENV_FILE}"
+    set -a
+    # shellcheck disable=SC1090
+    source "${ENV_FILE}"
+    set +a
+  else
+    echo "[setup] --source env requested but .env not found at ${ENV_FILE}" >&2
+  fi
+fi
+
 VENV_DIR="${MAILHUB_VENV_DIR:-${SKILL_DIR}/.venv}"
 STATE_DIR="${MAILHUB_STATE_DIR:-${HOME}/.openclaw/state/mailhub}"
 LAUNCHER="${HOME}/.local/bin/mailhub"
@@ -36,6 +109,15 @@ mkdir -p "$(dirname "${LAUNCHER}")"
 cat > "${LAUNCHER}" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${SOURCE_MODE}" == "env" ]]; then
+  ENV_FILE="${SKILL_DIR}/.env"
+  if [[ -f "\${ENV_FILE}" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "\${ENV_FILE}"
+    set +a
+  fi
+fi
 export MAILHUB_STATE_DIR="\${MAILHUB_STATE_DIR:-${STATE_DIR}}"
 exec "${VENV_DIR}/bin/mailhub" "\$@"
 EOF
@@ -49,5 +131,6 @@ if [[ ":${PATH}:" != *":${HOME}/.local/bin:"* ]]; then
   echo "export PATH=\"${HOME}/.local/bin:\$PATH\""
 fi
 
-echo "[setup] done. test with:"
-echo "mailhub doctor"
+echo "[setup] running doctor..."
+"${LAUNCHER}" doctor
+echo "[setup] done."

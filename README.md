@@ -32,11 +32,14 @@ Runtime order:
 ### 1）安装
 
 ```bash
-~/.openclaw/skills/mailhub/setup ~/.openclaw/skills/mailhub
+~/.openclaw/skills/mailhub/setup --dir ~/.openclaw/skills/mailhub --source env
 ```
 
 Creates local venv + launcher + state dir.
 会创建本地虚拟环境、启动器和状态目录。
+
+`setup` now runs `mailhub doctor` automatically after install.
+`setup` 安装完成后会自动执行 `mailhub doctor`。
 
 ### 2) Review and confirm config once
 ### 2）首次查看并确认配置
@@ -65,6 +68,12 @@ mailhub bind --provider google --google-client-id "<CLIENT_ID>" --alias "Work" -
 mailhub bind --provider microsoft --ms-client-id "<CLIENT_ID>" --alias "Corp" --scopes mail,calendar,contacts
 mailhub bind --provider imap --email you@example.com --imap-host imap.example.com --smtp-host smtp.example.com --alias "Personal"
 ```
+
+OAuth app credentials are global defaults; one client can authorize multiple Google/Microsoft accounts.
+OAuth 应用凭证是全局默认值；一个 client 可以授权多个 Google/Microsoft 账号。
+
+Credential precedence: CLI flags > environment variables > settings file.
+凭证优先级：CLI 参数 > 环境变量 > settings 文件。
 
 List/update bound accounts:
 查看/更新已绑定账号：

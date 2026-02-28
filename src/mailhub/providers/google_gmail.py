@@ -7,12 +7,14 @@ import time
 import hashlib
 import secrets
 import socket
+import sys
+import select
 import webbrowser
-from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode, parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse
 import requests
+from requests import HTTPError
 
 from ..config import Settings
 from ..security import SecretStore
@@ -71,7 +73,7 @@ def _local_server_get_code(port: int, timeout: int = 180) -> str:
                 return q["code"][0]
             if "error" in q and q["error"]:
                 raise RuntimeError(f"OAuth error: {q['error'][0]}")
-        raise TimeoutError("OAuth timeout waiting for code")
+        raise TimeoutError(f"OAuth timeout waiting for code on 127.0.0.1:{port} after {timeout}s")
     finally:
         httpd.server_close()
 
@@ -84,12 +86,111 @@ def _pick_loopback_port() -> int:
 
 def _build_scopes(scopes: str) -> List[str]:
     parts = [p.strip().lower() for p in scopes.split(",") if p.strip()]
+    if "all" in parts:
+        parts = list(SCOPE_MAP.keys())
     out: List[str] = []
     for p in parts:
         out.extend(SCOPE_MAP.get(p, []))
     if not out:
         raise ValueError("No valid scopes requested")
     return sorted(set(out))
+
+
+def _extract_code_value(v: str) -> str:
+    raw = (v or "").strip()
+    if not raw:
+        return ""
+    if "code=" in raw:
+        q = parse_qs(urlparse(raw).query)
+        codes = q.get("code") or []
+        if codes:
+            return codes[0]
+    return raw
+
+
+def _wait_code_or_manual(port: int, timeout: int = 180) -> str:
+    """
+    Wait for either:
+    1) OAuth callback to local HTTP server
+    2) Manual code (or callback URL) pasted to stdin
+    """
+    _CallbackHandler.query = {}
+    httpd = _ReusableHTTPServer(("127.0.0.1", port), _CallbackHandler)
+    httpd.timeout = 1
+
+    deadline = time.time() + timeout
+    stdin_ok = hasattr(sys.stdin, "fileno")
+
+    try:
+        while time.time() < deadline:
+            # A) local callback already arrived
+            q = _CallbackHandler.query
+            if "code" in q and q["code"]:
+                return q["code"][0]
+            if "error" in q and q["error"]:
+                raise RuntimeError(f"OAuth error: {q['error'][0]}")
+
+            # B) manual input available
+            if stdin_ok:
+                try:
+                    r, _, _ = select.select([sys.stdin], [], [], 0)
+                except Exception:
+                    r = []
+                    stdin_ok = False
+                if r:
+                    line = sys.stdin.readline()
+                    if line:
+                        code = _extract_code_value(line)
+                        if code:
+                            return code
+                    else:
+                        stdin_ok = False
+
+            # C) serve one callback request window
+            httpd.handle_request()
+
+        raise TimeoutError(f"OAuth timeout waiting for callback/manual code on 127.0.0.1:{port} after {timeout}s")
+    finally:
+        httpd.server_close()
+
+
+def _response_payload(resp: requests.Response) -> Dict[str, Any]:
+    try:
+        data = resp.json()
+        if isinstance(data, dict):
+            return data
+        return {"raw": data}
+    except Exception:
+        return {"raw_text": (resp.text or "")[:1000]}
+
+
+def _raise_google_http_error(stage: str, resp: requests.Response) -> None:
+    payload = _response_payload(resp)
+    err = payload.get("error")
+    err_desc = payload.get("error_description") or payload.get("error_summary") or ""
+    hints = [
+        "Use a fresh authorization code (codes are short-lived and one-time).",
+        "Ensure redirect_uri used in authorize and token steps is identical.",
+        "For Desktop App OAuth client, avoid stale mismatched client_secret.",
+        "If needed, clear stored secret: mailhub settings-set oauth.google_client_secret \"\"",
+    ]
+    raise RuntimeError(
+        json.dumps(
+            {
+                "ok": False,
+                "provider": "google",
+                "stage": stage,
+                "http_status": resp.status_code,
+                "endpoint": str(resp.url),
+                "error": err or "http_error",
+                "error_description": err_desc,
+                "response": payload,
+                "hints": hints,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 def _pkce_pair() -> tuple[str, str]:
@@ -111,18 +212,21 @@ def auth_google(
     is_contacts: bool = True,
     client_id_override: str = "",
     client_secret_override: str = "",
+    manual_code: str = "",
 ) -> None:
     s = Settings.load()
     s.ensure_dirs()
     db = DB(s.db_path)
     db.init()
 
-    client_id = client_id_override or s.oauth.google_client_id or os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+    client_id = (client_id_override or s.effective_google_client_id()).strip()
     if not client_id:
         raise RuntimeError("Missing Google OAuth client id (settings oauth.google_client_id or GOOGLE_OAUTH_CLIENT_ID env var)")
 
-    client_secret = client_secret_override or s.oauth.google_client_secret or os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
+    client_secret = (client_secret_override or s.effective_google_client_secret()).strip()
     env_port = os.environ.get("MAILHUB_GOOGLE_CALLBACK_PORT", "").strip()
+    env_timeout = os.environ.get("MAILHUB_GOOGLE_OAUTH_TIMEOUT", "").strip()
+    timeout = int(env_timeout) if env_timeout else 300
     port = int(env_port) if env_port else _pick_loopback_port()
     redirect_uri = f"http://127.0.0.1:{port}/callback"
     scope_list = _build_scopes(scopes)
@@ -142,20 +246,43 @@ def auth_google(
 
     url = requests.Request("GET", GOOGLE_AUTH_URL, params=params).prepare().url
     assert url
-    webbrowser.open(url)
+    print(f"Google OAuth URL: {url}", flush=True)
+    try:
+        opened = webbrowser.open(url)
+        if not opened:
+            print("Browser did not auto-open. Please open the URL manually.", flush=True)
+    except Exception:
+        print("Failed to auto-open browser. Please open the URL manually.", flush=True)
 
-    code = _local_server_get_code(port=port)
+    print(
+        f"Waiting for OAuth callback on http://127.0.0.1:{port}/callback (timeout {timeout}s)...",
+        flush=True,
+    )
+    print("You can paste OAuth code (or full callback URL) here anytime while waiting.", flush=True)
+
+    code = _extract_code_value(manual_code)
+    if not code:
+        code = _wait_code_or_manual(port=port, timeout=timeout)
+    if not code:
+        raise TimeoutError(
+            f"OAuth callback/manual code not received. Open the URL above in a browser where 127.0.0.1:{port} is reachable, "
+            "or rerun with `--code <oauth_code>`."
+        )
 
     data = {
         "code": code,
         "client_id": client_id,
-        "client_secret": client_secret,
         "redirect_uri": redirect_uri,
         "grant_type": "authorization_code",
         "code_verifier": verifier,
     }
+    if client_secret:
+        data["client_secret"] = client_secret
     r = requests.post(GOOGLE_TOKEN_URL, data=data, timeout=30)
-    r.raise_for_status()
+    try:
+        r.raise_for_status()
+    except HTTPError:
+        _raise_google_http_error("token_exchange", r)
     tok = r.json()
 
     access_token = tok["access_token"]
@@ -208,19 +335,23 @@ def _refresh_if_needed(pid: str, store: SecretStore) -> str:
             raise RuntimeError("No access token available")
         return access
 
-    client_id = s.oauth.google_client_id or os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
-    client_secret = s.oauth.google_client_secret or os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
+    client_id = s.effective_google_client_id()
+    client_secret = s.effective_google_client_secret()
     if not client_id:
         raise RuntimeError("Missing Google OAuth client id (settings oauth.google_client_id or GOOGLE_OAUTH_CLIENT_ID env var)")
 
     data = {
         "client_id": client_id,
-        "client_secret": client_secret,
         "refresh_token": refresh,
         "grant_type": "refresh_token",
     }
+    if client_secret:
+        data["client_secret"] = client_secret
     r = requests.post(GOOGLE_TOKEN_URL, data=data, timeout=30)
-    r.raise_for_status()
+    try:
+        r.raise_for_status()
+    except HTTPError:
+        _raise_google_http_error("token_refresh", r)
     tok = r.json()
 
     access_token = tok["access_token"]
