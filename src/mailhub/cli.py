@@ -250,7 +250,7 @@ def _ingest(date: str = "today"):
 
 @inbox_app.command("read")
 def _read(
-    message_id: str = typer.Option(..., "--id", help="MailHub message id."),
+    message_id: str = typer.Option(..., "--id", help="Mail id (numeric) or MailHub message id."),
     include_raw: bool = typer.Option(False, "--raw", help="Include raw JSON payload."),
 ):
     """Read full content of one stored email by MailHub message id."""
@@ -290,7 +290,7 @@ def _reply_prepare(
 
 @reply_app.command("compose")
 def _reply_compose(
-    message_id: str = typer.Option(..., "--message-id", help="MailHub message id to reply."),
+    message_id: str = typer.Option(..., "--message-id", help="Mail id (numeric) or MailHub message id to reply."),
     mode: str = typer.Option("auto", "--mode", help="auto|optimize|raw"),
     content: str = typer.Option("", "--content", help="User-provided content or optimization hint."),
     review: bool = typer.Option(True, "--review/--no-review", help="Interactive a/b/c review loop in TTY."),
@@ -316,10 +316,37 @@ def _reply_send(
     confirm_text: str = typer.Option(..., "--confirm-text", help="Must include word 'send'."),
     index: int | None = typer.Option(None, "--index", help="Pending queue index (1-based)."),
     reply_id: int | None = typer.Option(None, "--id", help="Stable reply queue id from list output (preferred)."),
+    message: str | None = typer.Option(
+        None,
+        "--message",
+        help='JSON payload for manual send, e.g. {"Subject":"...","to":"...","from":"...","context":"..."}',
+    ),
+    bypass_message: bool = typer.Option(
+        False,
+        "--bypass-message",
+        "--bypass_message",
+        help="Bypass --message requirement (standalone mode only).",
+    ),
 ):
     """Send prepared reply by ID (preferred) or index fallback."""
     _require_first_run_confirmation()
-    console.print(reply_send(index=index, reply_id=reply_id, confirm_text=confirm_text))
+    message_payload: Dict[str, Any] | None = None
+    if message:
+        parsed = json.loads(message)
+        if not isinstance(parsed, dict):
+            raise typer.BadParameter("--message must be a JSON object.")
+        message_payload = parsed
+    if message_payload and bypass_message:
+        raise typer.BadParameter("Do not use --message and --bypass-message together.")
+    console.print(
+        reply_send(
+            index=index,
+            reply_id=reply_id,
+            confirm_text=confirm_text,
+            message_payload=message_payload,
+            bypass_message=bypass_message,
+        )
+    )
 
 
 @reply_app.command("auto")
@@ -384,7 +411,7 @@ app.add_typer(analysis_app, name="analysis")
 
 @analysis_app.command("record")
 def analysis_record_cmd(
-    message_id: str = typer.Option(..., "--message-id"),
+    message_id: str = typer.Option(..., "--message-id", help="Mail id (numeric) or MailHub message id."),
     title: str = typer.Option("", "--title"),
     summary: str = typer.Option("", "--summary"),
     tag: str = typer.Option("other", "--tag"),
@@ -448,18 +475,47 @@ def send_cmd(
     list_: bool = typer.Option(False, "--list", help="List pending send queue. Use with --confirm to send all."),
     confirm: bool = typer.Option(False, "--confirm", help="Required for sending actions."),
     limit: int = typer.Option(200, "--limit", help="Max queue items when listing/sending all."),
+    message: str | None = typer.Option(
+        None,
+        "--message",
+        help='JSON payload for openclaw-mode send, e.g. {"Subject":"...","to":"...","from":"...","context":"..."}',
+    ),
+    bypass_message: bool = typer.Option(
+        False,
+        "--bypass-message",
+        "--bypass_message",
+        help="Bypass --message requirement (standalone mode only).",
+    ),
 ):
     """Send one or all drafts from pending send queue."""
     _require_first_run_confirmation()
     try:
+        message_payload: Dict[str, Any] | None = None
+        if message:
+            parsed = json.loads(message)
+            if not isinstance(parsed, dict):
+                raise typer.BadParameter("--message must be a JSON object.")
+            message_payload = parsed
+        if message_payload and bypass_message:
+            raise typer.BadParameter("Do not use --message and --bypass-message together.")
+
+        if list_ and message_payload:
+            raise typer.BadParameter("--message is only supported with single `--id` send.")
         if list_ and confirm:
-            console.print(send_queue_send_all(confirm=True, limit=limit))
+            console.print(send_queue_send_all(confirm=True, limit=limit, bypass_message=bypass_message))
             return
         if list_:
             console.print(send_queue_list(limit=limit))
             return
         if reply_id is not None:
-            console.print(send_queue_send_one(reply_id=reply_id, confirm=confirm))
+            console.print(
+                send_queue_send_one(
+                    reply_id=reply_id,
+                    confirm=confirm,
+                    message_payload=message_payload,
+                    bypass_message=bypass_message,
+                )
+            )
             return
         console.print(send_queue_list(limit=limit))
     except Exception as exc:

@@ -13,6 +13,8 @@ from ..providers.imap_smtp import send_email as imap_send
 from ..providers.google_gmail import gmail_send
 from ..providers.ms_graph import graph_send_mail
 
+OPENCLAW_MESSAGE_CONTEXT_SUFFIX = "\n\n\n<this reply is auto genertated by Mailhub skill>"
+
 
 def _choose_sender_provider(db: DB) -> Optional[Dict[str, Any]]:
     providers = db.list_providers()
@@ -47,7 +49,7 @@ def _choose_sender_for_message(db: DB, msg_provider_id: str) -> Optional[Dict[st
     return _choose_sender_provider(db)
 
 
-def _draft_reply(subject: str, body_hint: str, disclosure: str, incoming: Dict[str, Any] | None = None) -> Tuple[str, str]:
+def _draft_reply(subject: str, body_hint: str, disclosure: str = "", incoming: Dict[str, Any] | None = None) -> Tuple[str, str]:
     incoming = incoming or {}
     agent_out = draft_reply_with_agent(
         {
@@ -71,7 +73,7 @@ def _draft_reply(subject: str, body_hint: str, disclosure: str, incoming: Dict[s
         a_subj = str(agent_out.get("subject") or "").strip()
         a_body = str(agent_out.get("body") or "").strip()
         if a_subj and a_body:
-            if not a_body.endswith(disclosure):
+            if disclosure and not a_body.endswith(disclosure):
                 a_body = (a_body.rstrip() + "\n\n" + disclosure).strip()
             return a_subj, a_body + "\n"
 
@@ -79,7 +81,10 @@ def _draft_reply(subject: str, body_hint: str, disclosure: str, incoming: Dict[s
     subj = subject.strip()
     if not subj.lower().startswith("re:"):
         subj = "Re: " + subj
-    body = (body_hint.strip() + "\n\n" + disclosure + "\n").strip() + "\n"
+    body = body_hint.strip()
+    if disclosure:
+        body = (body + "\n\n" + disclosure).strip()
+    body = body.strip() + "\n"
     return subj, body
 
 
@@ -90,11 +95,28 @@ def _reply_subject(source_subject: str) -> str:
     return subj
 
 
-def _ensure_disclosure(text: str, disclosure: str) -> str:
-    body = (text or "").strip()
-    if disclosure and not body.endswith(disclosure):
-        body = (body.rstrip() + "\n\n" + disclosure).strip()
-    return body + "\n"
+def _normalize_send_message_payload(raw: Dict[str, Any]) -> Dict[str, str]:
+    payload = {
+        str(k).strip().lower(): ("" if v is None else str(v).strip())
+        for k, v in (raw or {}).items()
+    }
+    unknown = [k for k in payload.keys() if k not in ("subject", "to", "from", "context")]
+    if unknown:
+        raise ValueError(
+            "Invalid --message payload. Allowed keys only: subject, to, from, context. "
+            f"Unexpected: {', '.join(unknown)}"
+        )
+    out = {
+        "subject": payload.get("subject", ""),
+        "to": payload.get("to", ""),
+        "from": payload.get("from", ""),
+        "context": payload.get("context", ""),
+    }
+    if not out["context"]:
+        raise ValueError(
+            "Invalid --message payload. `context` is required and cannot be empty."
+        )
+    return out
 
 
 def _build_draft_for_mode(
@@ -110,11 +132,20 @@ def _build_draft_for_mode(
         return _draft_reply(subject, "Thanks for your email.", disclosure, incoming=message)
     if m == "optimize":
         hint = content.strip() or "Please produce a concise, clear, empathetic reply."
-        return _draft_reply(subject, hint, disclosure, incoming=message)
+        return _draft_reply(subject, hint, incoming=message)
     if m == "raw":
         base = content.strip() or "Thanks for your email."
-        return _reply_subject(subject), _ensure_disclosure(base, disclosure)
+        return _reply_subject(subject), base.strip() + "\n"
     raise ValueError("Unsupported mode. Use auto|optimize|raw.")
+
+
+def _send_cmd_for_mode(reply_id: int, mode: str) -> str:
+    if (mode or "").strip().lower() == "openclaw":
+        return (
+            f"mailhub send --id {reply_id} --confirm --message "
+            "'{\"Subject\":\"<subject>\",\"to\":\"<to>\",\"from\":\"<from>\",\"context\":\"<context>\"}'"
+        )
+    return f"mailhub send --id {reply_id} --confirm --bypass-message"
 
 
 def _pending_item_by_id(db: DB, reply_id: int) -> Dict[str, Any]:
@@ -150,6 +181,7 @@ def reply_prepare(index: int | None = None, reply_id: int | None = None) -> Dict
     s = Settings.load()
     db = DB(s.db_path)
     db.init()
+    mode = s.effective_mode()
 
     item, resolved_index = _resolve_pending_reply_target(db, index=index, reply_id=reply_id)
     msg = db.get_message(item["message_id"])
@@ -175,6 +207,7 @@ def reply_prepare(index: int | None = None, reply_id: int | None = None) -> Dict
             "subject": subj,
             "body": body,
         },
+        "send_cmd": _send_cmd_for_mode(int(item["id"]), mode),
         "note": "Confirm before sending: use reply send --id <ID> --confirm-text '<text with send>'.",
     }
 
@@ -185,6 +218,8 @@ def reply_send(
     reply_id: int | None = None,
     confirm_text: str,
     send_mode: str = "manual",
+    message_payload: Dict[str, Any] | None = None,
+    bypass_message: bool = False,
 ) -> Dict[str, Any]:
     """
     Sends the prepared draft for the index-th pending item.
@@ -196,24 +231,59 @@ def reply_send(
     s = Settings.load()
     db = DB(s.db_path)
     db.init()
+    mode = s.effective_mode()
+
+    if send_mode != "auto":
+        if bypass_message:
+            if mode != "standalone":
+                raise ValueError("--bypass-message is only allowed in standalone mode.")
+        elif not message_payload:
+            raise ValueError(
+                "Manual send requires --message JSON payload. "
+                'Use `--message \'{"Subject":"...","to":"...","from":"...","context":"..."}\'`, '
+                "or use --bypass-message only in standalone mode."
+            )
 
     rq, resolved_index = _resolve_pending_reply_target(db, index=index, reply_id=reply_id)
-    if not rq.get("drafted_body"):
-        raise RuntimeError("Draft not prepared. Run reply prepare first.")
-
     msg = db.get_message(rq["message_id"])
     if not msg:
         raise RuntimeError("Message not found")
 
-    to_addr = _extract_reply_to(msg.get("from_addr") or "")
     provider = _choose_sender_for_message(db, msg.get("provider_id") or "")
     if not provider:
         raise RuntimeError("No provider configured to send")
 
-    # Pick a from address if possible
-    from_addr = provider.get("email") or ""
-    subject = rq["drafted_subject"]
-    body = rq["drafted_body"]
+    default_to = _extract_reply_to(msg.get("from_addr") or "")
+    default_from = provider.get("email") or ""
+    default_subject = (rq.get("drafted_subject") or "").strip() or _reply_subject(msg.get("subject") or "")
+
+    normalized_message: Dict[str, str] | None = None
+    if message_payload:
+        normalized_message = _normalize_send_message_payload(message_payload)
+        to_addr = normalized_message["to"] or default_to
+        from_addr = normalized_message["from"] or default_from
+        subject = normalized_message["subject"] or default_subject
+        body = normalized_message["context"].rstrip() + OPENCLAW_MESSAGE_CONTEXT_SUFFIX + "\n"
+        db.update_reply_draft(rq["id"], subject, body, utc_now_iso())
+        rq = _pending_item_by_id(db, int(rq["id"]))
+        subject = rq["drafted_subject"]
+        body = rq["drafted_body"]
+    else:
+        if not rq.get("drafted_body"):
+            raise RuntimeError("Draft not prepared. Run reply prepare first.")
+        to_addr = default_to
+        from_addr = default_from
+        subject = rq["drafted_subject"]
+        body = rq["drafted_body"]
+
+    if not to_addr:
+        raise RuntimeError("Missing recipient address. Provide `to` in --message.")
+    if not from_addr:
+        raise RuntimeError("Missing sender address. Provide `from` in --message.")
+    if not subject.strip():
+        raise RuntimeError("Missing subject. Provide `Subject` in --message.")
+    if not body.strip():
+        raise RuntimeError("Missing email body content.")
 
     send_result: Dict[str, Any]
     if provider["kind"] == "imap":
@@ -235,7 +305,9 @@ def reply_send(
         "resolved_command": f"mailhub reply send --id {int(rq['id'])} --confirm-text \"send\"",
         "sent_via": provider["kind"],
         "to": to_addr,
+        "from": from_addr,
         "send_mode": send_mode,
+        "message_source": "message_payload" if normalized_message else "stored_draft",
         "result": send_result,
     }
 
@@ -244,6 +316,7 @@ def send_queue_list(limit: int = 200) -> Dict[str, Any]:
     s = Settings.load()
     db = DB(s.db_path)
     db.init()
+    mode = s.effective_mode()
     pending = db.list_reply_queue(status="pending", limit=limit)
     items: List[Dict[str, Any]] = []
     not_ready: List[int] = []
@@ -265,7 +338,7 @@ def send_queue_list(limit: int = 200) -> Dict[str, Any]:
                 "sender_address": sender_addr,
                 "message_id": x.get("message_id") or "",
                 "display": f"(Id: {rid}) {new_title}",
-                "send_cmd": f"mailhub send --id {rid} --confirm",
+                "send_cmd": _send_cmd_for_mode(rid, mode),
             }
         )
     return {
@@ -277,22 +350,51 @@ def send_queue_list(limit: int = 200) -> Dict[str, Any]:
     }
 
 
-def send_queue_send_one(reply_id: int, confirm: bool) -> Dict[str, Any]:
+def send_queue_send_one(
+    reply_id: int,
+    confirm: bool,
+    *,
+    message_payload: Dict[str, Any] | None = None,
+    bypass_message: bool = False,
+) -> Dict[str, Any]:
     if not confirm:
+        mode = Settings.load().effective_mode()
+        hint_cmd = _send_cmd_for_mode(reply_id, mode)
         return {
             "ok": False,
             "reason": "confirm_required",
-            "hint": f"Run `mailhub send --id {reply_id} --confirm` to send.",
+            "hint": f"Run `{hint_cmd}` to send.",
         }
-    return reply_send(reply_id=reply_id, confirm_text="send")
+    return reply_send(
+        reply_id=reply_id,
+        confirm_text="send",
+        message_payload=message_payload,
+        bypass_message=bypass_message,
+    )
 
 
-def send_queue_send_all(confirm: bool, limit: int = 500) -> Dict[str, Any]:
+def send_queue_send_all(confirm: bool, limit: int = 500, *, bypass_message: bool = False) -> Dict[str, Any]:
     if not confirm:
         return {
             "ok": False,
             "reason": "confirm_required",
-            "hint": "Run `mailhub send --list --confirm` to send all pending drafts.",
+            "hint": "Run `mailhub send --list --confirm --bypass-message` to send all pending drafts in standalone mode.",
+        }
+    mode = Settings.load().effective_mode()
+    if not bypass_message:
+        return {
+            "ok": False,
+            "reason": "message_required",
+            "hint": (
+                "Bulk send requires --bypass-message, or send one-by-one with "
+                "`mailhub send --id <Id> --confirm --message '{\"Subject\":\"...\",\"to\":\"...\",\"from\":\"...\",\"context\":\"...\"}'`."
+            ),
+        }
+    if mode != "standalone":
+        return {
+            "ok": False,
+            "reason": "bypass_not_allowed",
+            "hint": "--bypass-message is only allowed in standalone mode.",
         }
     queue = send_queue_list(limit=limit)
     sent: List[Dict[str, Any]] = []
@@ -302,7 +404,7 @@ def send_queue_send_all(confirm: bool, limit: int = 500) -> Dict[str, Any]:
         if rid <= 0:
             continue
         try:
-            sent.append(reply_send(reply_id=rid, confirm_text="send"))
+            sent.append(reply_send(reply_id=rid, confirm_text="send", bypass_message=True))
         except Exception as exc:
             failed.append({"id": rid, "error": str(exc)})
     return {
@@ -325,11 +427,14 @@ def reply_compose(
     s = Settings.load()
     db = DB(s.db_path)
     db.init()
-    msg = db.get_message(message_id)
+    resolved_message_id = db.resolve_message_id(message_id)
+    if not resolved_message_id:
+        return {"ok": False, "reason": "message_not_found", "message_ref": message_id}
+    msg = db.get_message(resolved_message_id)
     if not msg:
-        return {"ok": False, "reason": "message_not_found", "message_id": message_id}
+        return {"ok": False, "reason": "message_not_found", "message_ref": message_id}
 
-    rq_id = db.enqueue_reply(message_id, "pending", "manual compose", utc_now_iso())
+    rq_id = db.enqueue_reply(resolved_message_id, "pending", "manual compose", utc_now_iso())
     subj, body = _build_draft_for_mode(mode=mode, message=msg, disclosure=s.disclosure_text(), content=content)
     db.update_reply_draft(rq_id, subj, body, utc_now_iso())
 
@@ -357,9 +462,9 @@ def reply_compose(
                 continue
             if choice in ("c", "manual", "edit"):
                 subj_new = input(f"New subject [{cur.get('drafted_subject') or _reply_subject(msg.get('subject') or '')}]: ").strip()
-                body_new = input("New body (single-line input, disclosure auto-appended): ").strip()
+                body_new = input("New body (single-line input): ").strip()
                 subj3 = subj_new or (cur.get("drafted_subject") or _reply_subject(msg.get("subject") or ""))
-                body3 = _ensure_disclosure(body_new or (cur.get("drafted_body") or ""), s.disclosure_text())
+                body3 = (body_new or (cur.get("drafted_body") or "")).rstrip() + "\n"
                 db.update_reply_draft(rq_id, subj3, body3, utc_now_iso())
                 continue
 
@@ -367,7 +472,9 @@ def reply_compose(
     return {
         "ok": True,
         "id": rq_id,
-        "message_id": message_id,
+        "mailhub_id": int(msg.get("mail_id") or 0),
+        "mail_id": int(msg.get("mail_id") or 0),
+        "message_id": resolved_message_id,
         "new_title": cur.get("drafted_subject") or "",
         "source_title": msg.get("subject") or "",
         "from_address": msg.get("from_addr") or "",
@@ -380,7 +487,7 @@ def reply_compose(
         "next_steps": [
             f"mailhub reply revise --id {rq_id} --mode optimize --content \"<instructions>\"",
             f"mailhub reply revise --id {rq_id} --mode raw --content \"<manual body>\"",
-            f"mailhub send --id {rq_id} --confirm",
+            _send_cmd_for_mode(rq_id, s.effective_mode()),
         ],
         "send_queue": send_queue_list(),
     }
@@ -472,6 +579,7 @@ def reply_suggested_list(date: str = "today", limit: int = 50) -> Dict[str, Any]
 
 def reply_center(date: str = "today") -> Dict[str, Any]:
     day = today_yyyy_mm_dd_utc() if date == "today" else date
+    mode = Settings.load().effective_mode()
     if not sys.stdin.isatty():
         return {
             "ok": False,
@@ -486,7 +594,7 @@ def reply_center(date: str = "today") -> Dict[str, Any]:
                 f"mailhub reply suggested-list --date {day}",
                 "mailhub reply prepare --id <ID>",
                 "mailhub reply prepare --index <N>",
-                "mailhub send --id <ID> --confirm",
+                _send_cmd_for_mode(111, mode).replace("111", "<ID>"),
             ],
         }
 
@@ -529,6 +637,7 @@ def _extract_reply_to(from_header: str) -> str:
 
 
 def _indexed(items: list[Dict[str, Any]], db: DB) -> list[Dict[str, Any]]:
+    mode = Settings.load().effective_mode()
     out: list[Dict[str, Any]] = []
     for i, x in enumerate(items, start=1):
         item_id = int(x.get("id") or 0)
@@ -551,7 +660,7 @@ def _indexed(items: list[Dict[str, Any]], db: DB) -> list[Dict[str, Any]]:
                 "send_mode": x.get("send_mode") or "",
                 "display": f"index {i}. (Id: {item_id}) {title}",
                 "prepare_cmd": f"mailhub reply prepare --id {item_id}",
-                "send_cmd": f"mailhub send --id {item_id} --confirm",
+                "send_cmd": _send_cmd_for_mode(item_id, mode),
             }
         )
     return out

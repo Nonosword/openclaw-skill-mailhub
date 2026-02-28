@@ -220,7 +220,7 @@ class DB:
         con = self.connect()
         try:
             rows = con.execute(
-                "SELECT * FROM messages WHERE date_utc LIKE ? ORDER BY date_utc DESC",
+                "SELECT rowid AS mail_id, * FROM messages WHERE date_utc LIKE ? ORDER BY date_utc DESC",
                 (f"{date_prefix_yyyy_mm_dd}%",),
             ).fetchall()
             return [dict(r) for r in rows]
@@ -230,8 +230,26 @@ class DB:
     def get_message(self, message_id: str) -> Optional[Dict[str, Any]]:
         con = self.connect()
         try:
-            row = con.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone()
+            row = con.execute("SELECT rowid AS mail_id, * FROM messages WHERE id=?", (message_id,)).fetchone()
             return dict(row) if row else None
+        finally:
+            con.close()
+
+    def resolve_message_id(self, message_ref: str) -> Optional[str]:
+        raw = (message_ref or "").strip()
+        if not raw:
+            return None
+        con = self.connect()
+        try:
+            if raw.isdigit():
+                row = con.execute(
+                    "SELECT id FROM messages WHERE rowid=? LIMIT 1",
+                    (int(raw),),
+                ).fetchone()
+                if row:
+                    return str(row["id"])
+            row = con.execute("SELECT id FROM messages WHERE id=? LIMIT 1", (raw,)).fetchone()
+            return str(row["id"]) if row else None
         finally:
             con.close()
 
@@ -295,7 +313,7 @@ class DB:
         try:
             rows = con.execute(
                 """
-                SELECT rq.*, m.subject, m.from_addr, m.date_utc, m.provider_id
+                SELECT rq.*, m.rowid AS mail_id, m.subject, m.from_addr, m.date_utc, m.provider_id
                 FROM reply_queue rq
                 JOIN messages m ON m.id=rq.message_id
                 WHERE rq.status=?
@@ -313,7 +331,7 @@ class DB:
         try:
             row = con.execute(
                 """
-                SELECT rq.*, m.subject, m.from_addr, m.date_utc, m.provider_id
+                SELECT rq.*, m.rowid AS mail_id, m.subject, m.from_addr, m.date_utc, m.provider_id
                 FROM reply_queue rq
                 JOIN messages m ON m.id=rq.message_id
                 WHERE rq.id=?
@@ -362,7 +380,7 @@ class DB:
         try:
             rows = con.execute(
                 """
-                SELECT rq.*, m.subject, m.from_addr, m.date_utc, m.provider_id
+                SELECT rq.*, m.rowid AS mail_id, m.subject, m.from_addr, m.date_utc, m.provider_id
                 FROM reply_queue rq
                 JOIN messages m ON m.id=rq.message_id
                 WHERE rq.status=? AND m.date_utc LIKE ?
@@ -439,7 +457,7 @@ class DB:
         try:
             rows = con.execute(
                 """
-                SELECT ma.*, m.subject, m.from_addr, m.date_utc
+                SELECT ma.*, m.rowid AS mail_id, m.subject, m.from_addr, m.date_utc
                 FROM message_analysis ma
                 JOIN messages m ON m.id=ma.message_id
                 WHERE m.date_utc LIKE ?

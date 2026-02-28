@@ -74,11 +74,15 @@ def inbox_read(message_id: str, include_raw: bool = False) -> Dict[str, Any]:
     s = Settings.load()
     db = DB(s.db_path)
     db.init()
-    msg = db.get_message(message_id)
+    resolved_message_id = db.resolve_message_id(message_id)
+    if not resolved_message_id:
+        return {"ok": False, "reason": "message_not_found", "message_ref": message_id}
+    msg = db.get_message(resolved_message_id)
     if not msg:
-        return {"ok": False, "reason": "message_not_found", "message_id": message_id}
+        return {"ok": False, "reason": "message_not_found", "message_ref": message_id}
 
     payload: Dict[str, Any] = {
+        "mail_id": int(msg.get("mail_id") or 0),
         "id": msg.get("id"),
         "provider_id": msg.get("provider_id"),
         "thread_id": msg.get("thread_id"),

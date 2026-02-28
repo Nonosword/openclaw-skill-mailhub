@@ -6,7 +6,7 @@ from dataclasses import dataclass, asdict, fields
 from pathlib import Path
 from typing import Any, Dict
 
-DEFAULT_DISCLOSURE = "— Sent by <AgentName> via MailHub"
+DEFAULT_DISCLOSURE = "<This reply is auto-genertated by Mailhub skill>"
 
 
 @dataclass
@@ -95,13 +95,21 @@ class Settings:
         if settings_path.exists():
             data = json.loads(settings_path.read_text(encoding="utf-8"))
             t = data.get("toggles", {})
-            toggles = FeatureToggles(**{**asdict(toggles), **_filter_dataclass_kwargs(FeatureToggles, t)})
+            toggles = FeatureToggles(
+                **{**asdict(toggles), **_filter_dataclass_kwargs(FeatureToggles, t)}
+            )
             o = data.get("oauth", {})
-            oauth = OAuthClientConfig(**{**asdict(oauth), **_filter_dataclass_kwargs(OAuthClientConfig, o)})
+            oauth = OAuthClientConfig(
+                **{**asdict(oauth), **_filter_dataclass_kwargs(OAuthClientConfig, o)}
+            )
             r = data.get("runtime", {})
-            runtime = RuntimeFlags(**{**asdict(runtime), **_filter_dataclass_kwargs(RuntimeFlags, r)})
+            runtime = RuntimeFlags(
+                **{**asdict(runtime), **_filter_dataclass_kwargs(RuntimeFlags, r)}
+            )
             rt = data.get("routing", {})
-            routing = RoutingConfig(**{**asdict(routing), **_filter_dataclass_kwargs(RoutingConfig, rt)})
+            routing = RoutingConfig(
+                **{**asdict(routing), **_filter_dataclass_kwargs(RoutingConfig, rt)}
+            )
 
         return cls(
             state_dir=state_dir,
@@ -129,7 +137,9 @@ class Settings:
         self.settings_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def disclosure_text(self) -> str:
-        return self.toggles.disclosure_line.replace("<AgentName>", self.toggles.agent_display_name)
+        return self.toggles.disclosure_line.replace(
+            "<AgentName>", self.toggles.agent_display_name
+        )
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -143,7 +153,11 @@ class Settings:
         }
 
     def effective_mode(self) -> str:
-        v = (os.environ.get("MAILHUB_MODE") or self.routing.mode or "openclaw").strip().lower()
+        v = (
+            (os.environ.get("MAILHUB_MODE") or self.routing.mode or "openclaw")
+            .strip()
+            .lower()
+        )
         if v not in ("openclaw", "standalone"):
             return "openclaw"
         return v
@@ -174,11 +188,18 @@ class Settings:
         # Template is intentionally fixed at skill root for discoverability/editability.
         skill_dir = (os.environ.get("MAILHUB_SKILL_DIR") or "").strip()
         if skill_dir:
-            return str(Path(os.path.expandvars(skill_dir)).expanduser() / "standalone.models.template.json")
-        return str(Path(__file__).resolve().parents[2] / "standalone.models.template.json")
+            return str(
+                Path(os.path.expandvars(skill_dir)).expanduser()
+                / "standalone.models.template.json"
+            )
+        return str(
+            Path(__file__).resolve().parents[2] / "standalone.models.template.json"
+        )
 
     def load_standalone_models(self) -> Dict[str, Any]:
-        p = Path(os.path.expandvars(self.effective_standalone_models_path())).expanduser()
+        p = Path(
+            os.path.expandvars(self.effective_standalone_models_path())
+        ).expanduser()
         if not p.exists():
             return {}
         try:
@@ -188,7 +209,9 @@ class Settings:
         return data if isinstance(data, dict) else {}
 
     def _ensure_standalone_models_files(self) -> None:
-        p = Path(os.path.expandvars(self.effective_standalone_models_path())).expanduser()
+        p = Path(
+            os.path.expandvars(self.effective_standalone_models_path())
+        ).expanduser()
         p.parent.mkdir(parents=True, exist_ok=True)
         if not p.exists():
             p.write_text("{}", encoding="utf-8")
@@ -216,7 +239,10 @@ class Settings:
                     if k.strip() != key:
                         continue
                     val = v.strip()
-                    if len(val) >= 2 and ((val[0] == '"' and val[-1] == '"') or (val[0] == "'" and val[-1] == "'")):
+                    if len(val) >= 2 and (
+                        (val[0] == '"' and val[-1] == '"')
+                        or (val[0] == "'" and val[-1] == "'")
+                    ):
                         val = val[1:-1]
                     return val.strip()
             except Exception:
@@ -226,24 +252,24 @@ class Settings:
     def effective_google_client_id(self) -> str:
         return (
             os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
-            or self.oauth.google_client_id
             or self._dotenv_value("GOOGLE_OAUTH_CLIENT_ID")
+            or self.oauth.google_client_id
             or ""
         ).strip()
 
     def effective_google_client_secret(self) -> str:
         return (
             os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
-            or self.oauth.google_client_secret
             or self._dotenv_value("GOOGLE_OAUTH_CLIENT_SECRET")
+            or self.oauth.google_client_secret
             or ""
         ).strip()
 
     def effective_ms_client_id(self) -> str:
         return (
             os.environ.get("MS_OAUTH_CLIENT_ID")
-            or self.oauth.ms_client_id
             or self._dotenv_value("MS_OAUTH_CLIENT_ID")
+            or self.oauth.ms_client_id
             or ""
         ).strip()
 

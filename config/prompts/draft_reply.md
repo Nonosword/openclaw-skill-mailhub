@@ -23,7 +23,7 @@ Output requirements:
 - Return strict JSON only.
 - No markdown, no comments, no additional keys.
 - `subject` should start with `Re:` when appropriate.
-- `body` must end with the exact disclosure line from `must_append_disclosure`.
+- If `must_append_disclosure` is non-empty, `body` must end with that exact disclosure line.
 
 Output schema:
 {

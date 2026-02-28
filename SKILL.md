@@ -90,8 +90,18 @@ When user asks to reply to a specific email:
    - `id`, `new_title`, `source_title`, `from_address`, `sender_address`
    - queue only includes draft-ready items; unfinished drafts are `not_ready_ids`
 6. Sending:
-   - single: `mailhub send --id <Id> --confirm`
-   - all pending: `mailhub send --list --confirm`
+   - openclaw mode single: `mailhub send --id <Id> --confirm --message '{"Subject":"<subject>","to":"<to>","from":"<from>","context":"<context>"}'`
+   - standalone mode single: `mailhub send --id <Id> --confirm --bypass-message`
+   - all pending (standalone): `mailhub send --list --confirm --bypass-message`
+
+Openclaw send payload contract (strict):
+- `--message` must be a JSON object.
+- Required key: `context`.
+- Recommended keys: `Subject`, `to`, `from`.
+- MailHub overwrites existing pending draft before send.
+- MailHub appends `\n\n\n<this reply is auto genertated by Mailhub skill>` to `context`.
+- `subject` / `to` / `from` may fallback from existing message/provider context when omitted.
+- No `--message` means send is blocked, unless `--bypass-message` is set in standalone mode.
 
 ## Required Runtime State Machine
 When user asks to run mailbox workflow:
@@ -249,6 +259,8 @@ Parameters:
 - `--id <ID>` (preferred, stable reply queue id from list output)
 - `--index <N>` (fallback only)
 - `--confirm-text <text>` must include the word `send`.
+- `--message <json>` for manual send payload (`context` required).
+- `--bypass-message` only allowed in standalone mode.
 
 ### `mailhub send`
 Description: Send command for pending send queue.
@@ -256,6 +268,8 @@ Parameters:
 - `--id <Id>` send one pending item (requires `--confirm`)
 - `--list` list pending queue, or with `--confirm` send all pending
 - `--confirm` required for send actions
+- `--message <json>` required by default for manual single-send; schema `{"Subject":"...","to":"...","from":"...","context":"..."}`
+- `--bypass-message` only allowed in standalone mode (single/list send)
 
 ### `mailhub reply auto`
 Description: Auto-draft (and optionally send) for pending queue based on settings.
@@ -306,8 +320,8 @@ Parameters:
 - "read full email" -> `mailhub inbox read --id <mailhub_message_id>`
 - "draft reply to this email" -> `mailhub reply compose --message-id <mailhub_message_id> --mode auto`
 - "optimize my own draft" -> `mailhub reply revise --id <Id> --mode optimize --content "<text>"`
-- "send this draft" -> `mailhub send --id <Id> --confirm`
-- "send all pending drafts" -> `mailhub send --list --confirm`
+- "send this draft" -> openclaw mode: `mailhub send --id <Id> --confirm --message '{"Subject":"<subject>","to":"<to>","from":"<from>","context":"<context>"}'`
+- "send all pending drafts" -> standalone mode: `mailhub send --list --confirm --bypass-message`
 - "record analysis" -> `mailhub analysis record ...`
 - "show available commands" -> `mailhub --help`
 
@@ -320,4 +334,4 @@ For any generated reply suggestion:
 - Keep tone professional and empathetic.
 - If sender reports illness, loss, or hardship, acknowledge with supportive language.
 - If uncertain whether content is allowed, omit it.
-- Ensure disclosure line is appended at the end.
+- Append disclosure line only for auto-create draft flow and auto-reply flow.

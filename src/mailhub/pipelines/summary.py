@@ -8,6 +8,15 @@ from ..utils.time import today_yyyy_mm_dd_utc
 from .triage import triage_day
 
 
+def _send_cmd_for_mode(reply_id: int, mode: str) -> str:
+    if (mode or "").strip().lower() == "openclaw":
+        return (
+            f"mailhub send --id {reply_id} --confirm --message "
+            "'{\"Subject\":\"<subject>\",\"to\":\"<to>\",\"from\":\"<from>\",\"context\":\"<context>\"}'"
+        )
+    return f"mailhub send --id {reply_id} --confirm --bypass-message"
+
+
 def daily_summary(date: str = "today", include_lists: bool = True) -> Dict[str, Any]:
     day = today_yyyy_mm_dd_utc() if date == "today" else date
     db = DB(Settings.load().db_path)
@@ -41,6 +50,7 @@ def daily_summary(date: str = "today", include_lists: bool = True) -> Dict[str, 
 
 
 def _to_simple_list(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    mode = Settings.load().effective_mode()
     out: List[Dict[str, Any]] = []
     for i, x in enumerate(items, start=1):
         item_id = int(x.get("id") or 0)
@@ -58,7 +68,7 @@ def _to_simple_list(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "send_mode": x.get("send_mode") or "",
                 "display": f"index {i}. (Id: {item_id}) {title}",
                 "prepare_cmd": f"mailhub reply prepare --id {item_id}",
-                "send_cmd": f"mailhub send --id {item_id} --confirm",
+                "send_cmd": _send_cmd_for_mode(item_id, mode),
             }
         )
     return out

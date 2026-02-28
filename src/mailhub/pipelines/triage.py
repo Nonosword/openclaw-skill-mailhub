@@ -298,6 +298,7 @@ def triage_day(date: str = "today") -> Dict[str, Any]:
             reply_items.append(
                 {
                     "queue_id": rq_id,
+                    "mail_id": int(m.get("mail_id") or 0),
                     "message_id": m["id"],
                     "from": m.get("from_addr"),
                     "subject": m.get("subject"),
@@ -306,7 +307,9 @@ def triage_day(date: str = "today") -> Dict[str, Any]:
             )
         analyzed_items.append(
             {
-                "mailhub_id": m["id"],
+                "mailhub_id": int(m.get("mail_id") or 0),
+                "mail_id": int(m.get("mail_id") or 0),
+                "message_id": m["id"],
                 "title": m.get("subject") or "",
                 "snippet": (m.get("snippet") or "")[:300],
                 "tag": tag,
@@ -389,6 +392,8 @@ def triage_suggest(since: str = "15m") -> Dict[str, Any]:
             continue
         suggested.append(
             {
+                "mailhub_id": int(m.get("mail_id") or 0),
+                "mail_id": int(m.get("mail_id") or 0),
                 "message_id": m["id"],
                 "from": m.get("from_addr"),
                 "subject": m.get("subject"),
