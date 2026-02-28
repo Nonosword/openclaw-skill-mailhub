@@ -7,9 +7,14 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .config import Settings
 
 def agent_enabled() -> bool:
-    return os.environ.get("MAILHUB_USE_OPENCLAW_AGENT", "").strip().lower() in ("1", "true", "yes", "on")
+    s = Settings.load()
+    mode = s.effective_mode()
+    if mode != "standalone":
+        return False
+    return os.environ.get("MAILHUB_USE_OPENCLAW_AGENT", "1").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _prompt_text(name: str) -> str:
@@ -52,15 +57,18 @@ def run_agent(task: str, payload: Dict[str, Any], prompt_file: str) -> Optional[
     if not agent_enabled():
         return None
 
-    cmd = os.environ.get("MAILHUB_OPENCLAW_AGENT_CMD", "").strip()
+    s = Settings.load()
+    cmd = s.effective_standalone_agent_cmd()
     if not cmd:
         # Keep explicit and safe: no implicit shell invocation.
         return None
 
     req = {
+        "mode": s.effective_mode(),
         "task": task,
         "prompt": _prompt_text(prompt_file),
         "input": payload,
+        "openclaw_json_path": s.effective_openclaw_json_path(),
     }
 
     try:
@@ -90,4 +98,3 @@ def summarize_bucket_with_agent(payload: Dict[str, Any]) -> Optional[Dict[str, A
 
 def draft_reply_with_agent(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return run_agent("draft_reply", payload, "draft_reply.md")
-

@@ -278,13 +278,16 @@ def triage_day(date: str = "today") -> Dict[str, Any]:
     messages = db.get_messages_by_date(day)
 
     reply_items: List[Dict[str, Any]] = []
+    analyzed_items: List[Dict[str, Any]] = []
     for m in messages:
         tag, score, reason = classify_message(m, tags_rules)
         db.set_message_tag(m["id"], tag, score, reason, utc_now_iso())
 
         need, why = is_reply_needed(m, reply_rules)
+        queue_id = None
         if need:
             rq_id = db.enqueue_reply(m["id"], "pending", why, utc_now_iso())
+            queue_id = rq_id
             reply_items.append(
                 {
                     "queue_id": rq_id,
@@ -294,6 +297,18 @@ def triage_day(date: str = "today") -> Dict[str, Any]:
                     "why": why,
                 }
             )
+        analyzed_items.append(
+            {
+                "mailhub_id": m["id"],
+                "title": m.get("subject") or "",
+                "snippet": (m.get("snippet") or "")[:300],
+                "tag": tag,
+                "tag_score": score,
+                "suggest_reply": bool(need),
+                "suggest_reason": why if need else "",
+                "reply_queue_id": queue_id,
+            }
+        )
 
     counts = db.list_tag_counts_for_date(day)
     overview = _overview_by_tag(messages, db)
@@ -304,6 +319,7 @@ def triage_day(date: str = "today") -> Dict[str, Any]:
         "tag_counts": counts,
         "overview": overview,
         "reply_needed": reply_items[: s.toggles.reply_needed_max_items],
+        "analyzed_items": analyzed_items,
     }
 
 

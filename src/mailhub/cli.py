@@ -19,6 +19,7 @@ from .jobs import (
 from .pipelines.billing import billing_analyze, billing_detect, billing_month
 from .pipelines.calendar import agenda
 from .pipelines.ingest import inbox_ingest_day, inbox_poll
+from .pipelines.analysis import analysis_list, analysis_record
 from .pipelines.reply import reply_auto, reply_center, reply_prepare, reply_send, reply_sent_list, reply_suggested_list
 from .pipelines.summary import daily_summary
 from .pipelines.triage import triage_day, triage_suggest
@@ -313,6 +314,40 @@ def _month(month: str):
     console.print(billing_month(month=month))
 
 
+analysis_app = typer.Typer()
+app.add_typer(analysis_app, name="analysis")
+
+
+@analysis_app.command("record")
+def analysis_record_cmd(
+    message_id: str = typer.Option(..., "--message-id"),
+    title: str = typer.Option("", "--title"),
+    summary: str = typer.Option("", "--summary"),
+    tag: str = typer.Option("other", "--tag"),
+    suggest_reply: bool = typer.Option(False, "--suggest-reply/--no-suggest-reply"),
+    suggestion: str = typer.Option("", "--suggestion"),
+    source: str = typer.Option("openclaw", "--source"),
+):
+    _require_first_run_confirmation()
+    console.print(
+        analysis_record(
+            message_id=message_id,
+            title=title,
+            summary=summary,
+            tag=tag,
+            suggest_reply=suggest_reply,
+            suggestion=suggestion,
+            source=source,
+        )
+    )
+
+
+@analysis_app.command("list")
+def analysis_list_cmd(date: str = "today", limit: int = 200):
+    _require_first_run_confirmation()
+    console.print(analysis_list(date=date, limit=limit))
+
+
 jobs_app = typer.Typer()
 app.add_typer(jobs_app, name="jobs")
 
@@ -356,7 +391,7 @@ def settings_show_dash():
 
 @app.command("settings_set")
 def settings_set(key: str, value: str):
-    """Set settings key. Supports toggles.<key>, oauth.<key>, runtime.<key>."""
+    """Set settings key. Supports toggles.<key>, oauth.<key>, runtime.<key>, routing.<key>."""
     s = Settings.load()
 
     target = s.toggles
@@ -369,6 +404,8 @@ def settings_set(key: str, value: str):
             target = s.oauth
         elif ns == "runtime":
             target = s.runtime
+        elif ns == "routing":
+            target = s.routing
         else:
             raise typer.BadParameter(f"Unknown settings namespace: {ns}")
 

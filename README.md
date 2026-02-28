@@ -32,7 +32,9 @@ Runtime order:
 ### 1）安装
 
 ```bash
-~/.openclaw/skills/mailhub/setup --dir ~/.openclaw/skills/mailhub --source env
+~/.openclaw/skills/mailhub/setup --dir ~/.openclaw/skills/mailhub --source env --mode openclaw
+# or:
+~/.openclaw/skills/mailhub/setup --dir ~/.openclaw/skills/mailhub --source env --mode standalone --openclaw-json ~/.openclaw/openclaw.json
 ```
 
 Creates local venv + launcher + state dir.
@@ -120,21 +122,49 @@ mailhub reply center
 - replied list and suggested-not-replied list
 - 已回复列表与建议未回复列表
 
-### 6) A-scheme agent inference bridge
-### 6）A 方案 Agent 推理桥接
+### 6) Modes and routing
+### 6）模式与路由
 
-MailHub can hand email content to an OpenClaw-side agent command for classification, bucket summary and reply draft.
-MailHub 可将邮件内容交给 OpenClaw 侧 agent 命令做分类、分组总结与回复草拟。
+Mode `openclaw` (default): OpenClaw agent does summary/tag/reply suggestion from `mailhub jobs run` output, then writes analysis back.
+`openclaw`（默认）：由 OpenClaw agent 基于 `mailhub jobs run` 输出做总结/打标/建议回复，再回写分析结果。
+
+Mode `standalone`: MailHub pipelines call local agent command directly with strict prompts.
+`standalone`：MailHub 流水线直接调用本地 agent 命令，使用固定 prompt。
+
+Store/read mode:
+模式配置：
+```bash
+mailhub settings-set routing.mode openclaw
+mailhub settings-set routing.mode standalone
+mailhub settings-set routing.openclaw_json_path ~/.openclaw/openclaw.json
+mailhub settings-set routing.standalone_agent_cmd "<agent command>"
+```
+
+### 7) Standalone agent bridge
+### 7）Standalone Agent 桥接
+
+MailHub can hand email content to a local agent command for classification, bucket summary and reply draft.
+MailHub 可将邮件内容交给本地 agent 命令做分类、分组总结与回复草拟。
 
 Enable with env:
 使用环境变量启用：
 ```bash
 export MAILHUB_USE_OPENCLAW_AGENT=1
-export MAILHUB_OPENCLAW_AGENT_CMD="<your-openclaw-agent-json-command>"
+export MAILHUB_STANDALONE_AGENT_CMD="<your-openclaw-agent-json-command>"
 ```
 
 Input payload is JSON via stdin; command must return a JSON object on stdout.
 输入为 stdin JSON，命令需在 stdout 返回 JSON 对象。
+
+### 8) OpenClaw analysis write-back
+### 8）OpenClaw 分析回写
+
+Record agent analysis for reuse:
+记录 agent 分析以便复用：
+```bash
+mailhub analysis record --message-id "<mailhub_id>" --title "<title>" --summary "<summary>" --tag "<tag>" --suggest-reply --suggestion "<text>" --source openclaw
+mailhub analysis list --date today
+```
 
 ## Multi-Account Data Model
 ## 多账号数据模型

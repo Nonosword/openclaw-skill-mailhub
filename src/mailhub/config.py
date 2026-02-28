@@ -45,6 +45,15 @@ class RuntimeFlags:
 
 
 @dataclass
+class RoutingConfig:
+    # openclaw: rely on OpenClaw SKILL orchestration for reasoning
+    # standalone: reasoning via local agent bridge command + prompts
+    mode: str = "openclaw"  # openclaw|standalone
+    openclaw_json_path: str = "~/.openclaw/openclaw.json"
+    standalone_agent_cmd: str = ""
+
+
+@dataclass
 class OAuthClientConfig:
     google_client_id: str = ""
     google_client_secret: str = ""
@@ -61,6 +70,7 @@ class Settings:
     toggles: FeatureToggles
     oauth: OAuthClientConfig
     runtime: RuntimeFlags
+    routing: RoutingConfig
 
     @staticmethod
     def default_state_dir() -> Path:
@@ -80,6 +90,7 @@ class Settings:
         toggles = FeatureToggles()
         oauth = OAuthClientConfig()
         runtime = RuntimeFlags()
+        routing = RoutingConfig()
         if settings_path.exists():
             data = json.loads(settings_path.read_text(encoding="utf-8"))
             t = data.get("toggles", {})
@@ -88,6 +99,8 @@ class Settings:
             oauth = OAuthClientConfig(**{**asdict(oauth), **_filter_dataclass_kwargs(OAuthClientConfig, o)})
             r = data.get("runtime", {})
             runtime = RuntimeFlags(**{**asdict(runtime), **_filter_dataclass_kwargs(RuntimeFlags, r)})
+            rt = data.get("routing", {})
+            routing = RoutingConfig(**{**asdict(routing), **_filter_dataclass_kwargs(RoutingConfig, rt)})
 
         return cls(
             state_dir=state_dir,
@@ -97,6 +110,7 @@ class Settings:
             toggles=toggles,
             oauth=oauth,
             runtime=runtime,
+            routing=routing,
         )
 
     def ensure_dirs(self) -> None:
@@ -108,6 +122,7 @@ class Settings:
             "toggles": asdict(self.toggles),
             "oauth": asdict(self.oauth),
             "runtime": asdict(self.runtime),
+            "routing": asdict(self.routing),
         }
         self.settings_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -122,7 +137,29 @@ class Settings:
             "toggles": asdict(self.toggles),
             "oauth": asdict(self.oauth),
             "runtime": asdict(self.runtime),
+            "routing": asdict(self.routing),
         }
+
+    def effective_mode(self) -> str:
+        v = (os.environ.get("MAILHUB_MODE") or self.routing.mode or "openclaw").strip().lower()
+        if v not in ("openclaw", "standalone"):
+            return "openclaw"
+        return v
+
+    def effective_openclaw_json_path(self) -> str:
+        return (
+            os.environ.get("MAILHUB_OPENCLAW_JSON_PATH")
+            or self.routing.openclaw_json_path
+            or "~/.openclaw/openclaw.json"
+        ).strip()
+
+    def effective_standalone_agent_cmd(self) -> str:
+        return (
+            os.environ.get("MAILHUB_STANDALONE_AGENT_CMD")
+            or self.routing.standalone_agent_cmd
+            or os.environ.get("MAILHUB_OPENCLAW_AGENT_CMD")
+            or ""
+        ).strip()
 
     def _dotenv_value(self, key: str) -> str:
         # Priority: explicit env file -> cwd .env -> skill dir .env (if launcher exports) -> ""

@@ -35,6 +35,11 @@ def config_checklist(s: Settings) -> Dict[str, Any]:
         "modify_hint": "Use `mailhub settings-set <key> <value>` or `mailhub config --wizard` to change values.",
         "settings": {
             "toggles": asdict(s.toggles),
+            "routing": {
+                "mode": s.effective_mode(),
+                "openclaw_json_path": s.effective_openclaw_json_path(),
+                "standalone_agent_cmd_set": bool(s.effective_standalone_agent_cmd()),
+            },
             "oauth_defaults": {
                 "google_client_id_set": bool(s.effective_google_client_id()),
                 "google_client_id_source": "env" if google_env else ("settings" if s.oauth.google_client_id else ""),
@@ -160,6 +165,7 @@ def doctor_report(*, full: bool = False) -> Dict[str, Any]:
             "config_confirmed": s.runtime.config_confirmed,
             "config_confirmed_at": s.runtime.config_confirmed_at,
             "scheduler_tz": s.toggles.scheduler_tz,
+            "mode": s.effective_mode(),
         },
         "db_stats": db_stats,
     }
@@ -209,6 +215,7 @@ def run_jobs(since: str | None = None) -> Dict[str, Any]:
     }
 
     out["steps"]["poll"] = inbox_poll(since=effective_since, mode="jobs")
+    out["steps"]["triage_today"] = triage_day("today")
 
     if s.toggles.mail_alerts_mode in ("all", "suggested"):
         out["steps"]["alerts"] = triage_suggest(since=effective_since)

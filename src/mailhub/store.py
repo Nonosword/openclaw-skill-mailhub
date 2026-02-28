@@ -91,6 +91,20 @@ CREATE TABLE IF NOT EXISTS attachments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_attach_message ON attachments(message_id);
+
+CREATE TABLE IF NOT EXISTS message_analysis (
+  message_id TEXT PRIMARY KEY,
+  title TEXT,
+  summary TEXT,
+  tag TEXT,
+  suggest_reply INTEGER NOT NULL DEFAULT 0,
+  suggestion TEXT,
+  source TEXT NOT NULL DEFAULT 'openclaw', -- openclaw|standalone
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(message_id) REFERENCES messages(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_analysis_tag ON message_analysis(tag);
 """
 
 @dataclass
@@ -366,6 +380,58 @@ class DB:
                 if status == "sent" and (r["send_mode"] or "") == "auto":
                     out["auto_sent"] += c
             return out
+        finally:
+            con.close()
+
+    def upsert_message_analysis(
+        self,
+        *,
+        message_id: str,
+        title: str,
+        summary: str,
+        tag: str,
+        suggest_reply: bool,
+        suggestion: str,
+        source: str,
+        updated_at: str,
+    ) -> None:
+        con = self.connect()
+        try:
+            con.execute(
+                """
+                INSERT INTO message_analysis
+                (message_id, title, summary, tag, suggest_reply, suggestion, source, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                  title=excluded.title,
+                  summary=excluded.summary,
+                  tag=excluded.tag,
+                  suggest_reply=excluded.suggest_reply,
+                  suggestion=excluded.suggestion,
+                  source=excluded.source,
+                  updated_at=excluded.updated_at
+                """,
+                (message_id, title, summary, tag, int(bool(suggest_reply)), suggestion, source, updated_at),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+    def list_message_analysis_by_date(self, date_prefix_yyyy_mm_dd: str, limit: int = 200) -> List[Dict[str, Any]]:
+        con = self.connect()
+        try:
+            rows = con.execute(
+                """
+                SELECT ma.*, m.subject, m.from_addr, m.date_utc
+                FROM message_analysis ma
+                JOIN messages m ON m.id=ma.message_id
+                WHERE m.date_utc LIKE ?
+                ORDER BY ma.updated_at DESC
+                LIMIT ?
+                """,
+                (f"{date_prefix_yyyy_mm_dd}%", limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
         finally:
             con.close()
 

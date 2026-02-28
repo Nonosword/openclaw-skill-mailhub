@@ -2,26 +2,30 @@
 set -euo pipefail
 
 # Usage:
-#   ./setup --dir <SKILL_DIR> [--source env]
+#   ./setup --dir <SKILL_DIR> [--source env] [--mode openclaw|standalone] [--openclaw-json <path>]
 #   ./setup [SKILL_DIR]
 # Example:
-#   ~/.openclaw/skills/mailhub/setup --dir ~/.openclaw/skills/mailhub --source env
+#   ~/.openclaw/skills/mailhub/setup --dir ~/.openclaw/skills/mailhub --source env --mode standalone --openclaw-json ~/.openclaw/openclaw.json
 
 usage() {
   cat <<'EOF'
 Usage:
-  setup --dir <SKILL_DIR> [--source env]
+  setup --dir <SKILL_DIR> [--source env] [--mode openclaw|standalone] [--openclaw-json <path>]
   setup [SKILL_DIR]
 
 Options:
   --dir <path>     Skill working directory (default: script directory).
   --source env     Load <SKILL_DIR>/.env during setup and in launcher runtime.
+  --mode <value>   Routing mode: openclaw (default) or standalone.
+  --openclaw-json  Path to openclaw.json (default: ~/.openclaw/openclaw.json).
   -h, --help       Show this help.
 EOF
 }
 
 SKILL_DIR=""
 SOURCE_MODE="none"
+MODE="openclaw"
+OPENCLAW_JSON="${HOME}/.openclaw/openclaw.json"
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -33,6 +37,16 @@ while [[ $# -gt 0 ]]; do
     --source)
       [[ $# -ge 2 ]] || { echo "[setup] --source requires a value" >&2; exit 2; }
       SOURCE_MODE="$2"
+      shift 2
+      ;;
+    --mode)
+      [[ $# -ge 2 ]] || { echo "[setup] --mode requires a value" >&2; exit 2; }
+      MODE="$2"
+      shift 2
+      ;;
+    --openclaw-json)
+      [[ $# -ge 2 ]] || { echo "[setup] --openclaw-json requires a path" >&2; exit 2; }
+      OPENCLAW_JSON="$2"
       shift 2
       ;;
     -h|--help)
@@ -63,6 +77,14 @@ case "${SOURCE_MODE}" in
   none|env) ;;
   *)
     echo "[setup] unsupported --source value: ${SOURCE_MODE} (supported: env)" >&2
+    exit 2
+    ;;
+esac
+
+case "${MODE}" in
+  openclaw|standalone) ;;
+  *)
+    echo "[setup] unsupported --mode value: ${MODE} (supported: openclaw|standalone)" >&2
     exit 2
     ;;
 esac
@@ -111,6 +133,8 @@ cat > "${LAUNCHER}" <<EOF
 set -euo pipefail
 export MAILHUB_SKILL_DIR="${SKILL_DIR}"
 export MAILHUB_ENV_FILE="\${MAILHUB_ENV_FILE:-${SKILL_DIR}/.env}"
+export MAILHUB_MODE="\${MAILHUB_MODE:-${MODE}}"
+export MAILHUB_OPENCLAW_JSON_PATH="\${MAILHUB_OPENCLAW_JSON_PATH:-${OPENCLAW_JSON}}"
 if [[ "${SOURCE_MODE}" == "env" ]]; then
   ENV_FILE="${SKILL_DIR}/.env"
   if [[ -f "\${ENV_FILE}" ]]; then
@@ -135,4 +159,12 @@ fi
 
 echo "[setup] running doctor..."
 "${LAUNCHER}" doctor
+echo "[setup] configuring routing mode=${MODE}"
+"${LAUNCHER}" settings-set routing.mode "${MODE}"
+"${LAUNCHER}" settings-set routing.openclaw_json_path "${OPENCLAW_JSON}"
+if [[ "${MODE}" == "standalone" ]]; then
+  echo "[setup] standalone mode selected."
+  echo "[setup] set standalone agent command with:"
+  echo "  mailhub settings-set routing.standalone_agent_cmd '<your-agent-command>'"
+fi
 echo "[setup] done."

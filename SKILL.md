@@ -32,6 +32,14 @@ metadata:
 - `no providers bound` means no mail account/provider linked yet, not LLM/subagent setup.
 - MailHub supports multiple accounts per provider (Google/Microsoft/IMAP/etc.) and account-level capability flags.
 
+## Execution Modes (Routing)
+- `openclaw` (default): MailHub returns structured operational data; OpenClaw agent performs high-level summarization/decision and writes analysis back to MailHub.
+- `standalone`: MailHub internal pipelines call local agent bridge command (`routing.standalone_agent_cmd`) with strict prompts under `config/prompts/`.
+- Mode source:
+  - setup: `setup --mode openclaw|standalone --openclaw-json <path>`
+  - runtime config: `routing.mode`, `routing.openclaw_json_path`, `routing.standalone_agent_cmd`
+  - env override: `MAILHUB_MODE`, `MAILHUB_OPENCLAW_JSON_PATH`, `MAILHUB_STANDALONE_AGENT_CMD`
+
 ## Safety (MUST)
 - Never ask for passwords in chat.
 - IMAP/SMTP passwords must be entered only in the local CLI prompt (app-specific passwords).
@@ -149,6 +157,18 @@ Report:
 - DB-based daily summary command:
   mailhub daily-summary
 
+`mailhub jobs run` key output fields for agent:
+- `steps.poll`: newly fetched items and provider fetch status
+- `steps.triage_today.analyzed_items[]`:
+  - `mailhub_id` (stable internal primary id)
+  - `title`
+  - `snippet`
+  - `tag`
+  - `suggest_reply` (bool)
+  - `suggest_reason`
+  - `reply_queue_id` (nullable)
+- `steps.daily_summary`: today statistics + readable summary + replied/suggested lists
+
 ### 3.2 Replies
 Manual:
 - mailhub reply prepare --index N
@@ -182,6 +202,24 @@ Auto-reply:
 - Manual single-task request: call existing independent commands (`inbox/triage/reply/billing/cal`).
 - Status/check request: always call `mailhub doctor` and answer from doctor output.
 - For account list/change request: use `mailhub bind --list` and `mailhub bind --account-id ...`.
+
+### OpenClaw Mode Required Post-processing
+When mode is `openclaw` and `mailhub jobs run` returns:
+1) Generate user-readable summary from `steps.daily_summary` + `steps.triage_today`.
+2) For each important email, decide:
+   - normalized `tag`
+   - `suggest_reply` yes/no
+   - concise `summary`
+   - optional reply suggestion text
+3) Persist each analysis item back to MailHub:
+   - `mailhub analysis record --message-id "<mailhub_id>" --title "<title>" --summary "<summary>" --tag "<tag>" --suggest-reply --suggestion "<suggestion>" --source openclaw`
+4) Present readable output to user, including:
+   - counts
+   - replied list
+   - suggested-not-replied list
+   - recommended next actions
+
+Do not skip step 3, otherwise analysis cannot be reused by later commands.
 
 ## Classification Rules
 Use config/rules.email_tags.yml and prompts in config/prompts/.
