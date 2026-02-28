@@ -251,3 +251,48 @@ def graph_calendar_agenda(provider_id: str, time_min_iso: str, time_max_iso: str
     )
     r.raise_for_status()
     return r.json().get("value", [])
+
+
+def graph_calendar_create_event(
+    provider_id: str,
+    *,
+    subject: str,
+    start_utc_iso: str,
+    end_utc_iso: str,
+    location: str = "",
+    body_text: str = "",
+) -> Dict[str, Any]:
+    store = SecretStore(Settings.load().secrets_path)
+    access = _refresh_if_needed(provider_id, store)
+    # Graph DateTimeTimeZone expects dateTime without timezone suffix when timeZone is provided.
+    start_dt = start_utc_iso.replace("Z", "")
+    end_dt = end_utc_iso.replace("Z", "")
+    payload: Dict[str, Any] = {
+        "subject": subject.strip(),
+        "start": {"dateTime": start_dt, "timeZone": "UTC"},
+        "end": {"dateTime": end_dt, "timeZone": "UTC"},
+    }
+    if location.strip():
+        payload["location"] = {"displayName": location.strip()}
+    if body_text.strip():
+        payload["body"] = {"contentType": "Text", "content": body_text.strip()}
+    r = requests.post(
+        f"{GRAPH}/me/events",
+        json=payload,
+        headers={"Authorization": f"Bearer {access}"},
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def graph_calendar_delete_event(provider_id: str, event_id: str) -> Dict[str, Any]:
+    store = SecretStore(Settings.load().secrets_path)
+    access = _refresh_if_needed(provider_id, store)
+    r = requests.delete(
+        f"{GRAPH}/me/events/{event_id}",
+        headers={"Authorization": f"Bearer {access}"},
+        timeout=30,
+    )
+    r.raise_for_status()
+    return {"ok": True, "provider_id": provider_id, "event_id": event_id}

@@ -443,3 +443,45 @@ def google_calendar_list_events(provider_id: str, time_min_iso: str, time_max_is
     )
     r.raise_for_status()
     return r.json().get("items", [])
+
+
+def google_calendar_create_event(
+    provider_id: str,
+    *,
+    summary: str,
+    start_utc_iso: str,
+    end_utc_iso: str,
+    location: str = "",
+    description: str = "",
+) -> Dict[str, Any]:
+    store = SecretStore(Settings.load().secrets_path)
+    access = _refresh_if_needed(provider_id, store)
+    payload: Dict[str, Any] = {
+        "summary": summary.strip(),
+        "start": {"dateTime": start_utc_iso, "timeZone": "UTC"},
+        "end": {"dateTime": end_utc_iso, "timeZone": "UTC"},
+    }
+    if location.strip():
+        payload["location"] = location.strip()
+    if description.strip():
+        payload["description"] = description.strip()
+    r = requests.post(
+        f"{CAL_API}/calendars/primary/events",
+        json=payload,
+        headers={"Authorization": f"Bearer {access}"},
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def google_calendar_delete_event(provider_id: str, event_id: str) -> Dict[str, Any]:
+    store = SecretStore(Settings.load().secrets_path)
+    access = _refresh_if_needed(provider_id, store)
+    r = requests.delete(
+        f"{CAL_API}/calendars/primary/events/{event_id}",
+        headers={"Authorization": f"Bearer {access}"},
+        timeout=30,
+    )
+    r.raise_for_status()
+    return {"ok": True, "provider_id": provider_id, "event_id": event_id}

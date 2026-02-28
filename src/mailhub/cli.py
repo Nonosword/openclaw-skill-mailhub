@@ -17,7 +17,7 @@ from .jobs import (
     should_offer_bind_interactive,
 )
 from .pipelines.billing import billing_analyze, billing_detect, billing_month
-from .pipelines.calendar import agenda
+from .pipelines.calendar import agenda, calendar_event
 from .pipelines.ingest import inbox_ingest_day, inbox_poll, inbox_read
 from .pipelines.analysis import analysis_list, analysis_record
 from .pipelines.reply import (
@@ -373,7 +373,7 @@ def _reply_center(date: str = "today"):
     console.print(reply_center(date=date))
 
 
-cal_app = typer.Typer(help="Calendar read operations.")
+cal_app = typer.Typer(help="Calendar operations: view/add/delete/sync/remind/summary.")
 app.add_typer(cal_app, name="cal")
 
 
@@ -381,6 +381,38 @@ app.add_typer(cal_app, name="cal")
 def _agenda(days: int = 3):
     _require_first_run_confirmation()
     console.print(agenda(days=days))
+
+
+@cal_app.command("event")
+def _calendar_event(
+    event: str = typer.Option(..., "--event", help="view|add|delete|sync|summary|remind"),
+    datetime_raw: str = typer.Option("", "--datetime", help="Normalized datetime, e.g. 2026-03-01T09:00:00Z."),
+    datetime_range_raw: str = typer.Option(
+        "",
+        "--datetime-range",
+        help="Range `start/end`, JSON {start,end}, or keyword: today|tomorrow|past_week|this_week|this_week_remaining|next_week.",
+    ),
+    title: str = typer.Option("", "--title", help="Event title for add."),
+    location: str = typer.Option("", "--location", help="Event location for add."),
+    context: str = typer.Option("", "--context", help="Event context/description for add."),
+    provider_id: str = typer.Option("", "--provider-id", help="Optional provider id."),
+    event_id: str = typer.Option("", "--event-id", help="Provider event id for delete."),
+    duration_minutes: int = typer.Option(30, "--duration-minutes", help="Default duration for add when only --datetime is given."),
+):
+    _require_first_run_confirmation()
+    console.print(
+        calendar_event(
+            event=event,
+            datetime_raw=datetime_raw,
+            datetime_range_raw=datetime_range_raw,
+            title=title,
+            location=location,
+            context=context,
+            provider_id=provider_id,
+            event_id=event_id,
+            duration_minutes=duration_minutes,
+        )
+    )
 
 
 billing_app = typer.Typer(help="Billing statement detection and analysis.")

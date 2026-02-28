@@ -209,6 +209,25 @@ Description: DB-based daily summary (counts + replied/pending lists).
 Parameters:
 - `date` (default `today`).
 
+### `mailhub cal agenda`
+Description: Quick calendar read for next N days.
+Parameters:
+- `--days <N>` (default `3`)
+
+### `mailhub cal event`
+Description: Unified calendar event API for view/add/delete/sync/remind/summary.
+Parameters:
+- `--event <view|add|delete|sync|summary|remind>` (required)
+- `--datetime <ISO8601>` optional
+- `--datetime-range <start/end|json|keyword>` optional
+- `--title <text>` for `add`
+- `--location <text>` for `add`
+- `--context <text>` for `add`
+- `--provider-id <id>` optional
+- `--event-id <provider_event_id>` required for `delete`
+- `--duration-minutes <N>` default `30` for `add` with only `--datetime`
+- keywords for `--datetime-range`: `today|tomorrow|past_week|this_week|this_week_remaining|next_week`
+
 ### `mailhub inbox read`
 Description: Read one message full content from local DB.
 Parameters:
@@ -308,13 +327,18 @@ Parameters:
 - `mailhub auth ...`: direct auth routes.
 - `mailhub inbox ...`: poll/ingest commands.
 - `mailhub triage ...`: triage/suggest commands.
-- `mailhub cal ...`: calendar read commands.
+- `mailhub cal ...`: calendar view/add/delete/sync/remind/summary.
 - `mailhub billing ...`: billing detect/analyze/month.
 
 ## Intent Mapping (Natural Language -> Command)
 - "check status / health" -> `mailhub doctor` (`--all` for deep details)
 - "start mailbox workflow" -> `mailhub jobs run`
 - "show today's summary" -> `mailhub daily-summary`
+- "show this week remaining schedule" -> `mailhub cal event --event summary --datetime-range "this_week_remaining"`
+- "summarize the past week schedule" -> `mailhub cal event --event summary --datetime-range "past_week"`
+- "remind me tomorrow schedule" -> `mailhub cal event --event remind --datetime-range "tomorrow"`
+- "add a calendar event" -> `mailhub cal event --event add --datetime "<ISO8601>" --title "<title>" --context "<context>"`
+- "delete a calendar event" -> `mailhub cal event --event delete --provider-id "<provider_id>" --event-id "<provider_event_id>"`
 - "show replied list" -> `mailhub reply sent-list --date today`
 - "show suggested not replied" -> `mailhub reply suggested-list --date today`
 - "read full email" -> `mailhub inbox read --id <mailhub_message_id>`

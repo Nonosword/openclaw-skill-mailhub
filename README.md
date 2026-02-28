@@ -91,6 +91,45 @@ mailhub bind --provider microsoft --ms-client-id "<MS_OAUTH_CLIENT_ID>" --scopes
 mailhub bind --provider imap --email <email> --imap-host <host> --smtp-host <host>
 ```
 
+Google OAuth app creation (Gmail + Calendar + Contacts):
+1. Google Cloud Console -> enable APIs:
+   - Gmail API
+   - Google Calendar API
+   - People API
+2. Configure OAuth consent screen (External/Internal) and add test users if required.
+3. Credentials -> Create OAuth client ID -> Desktop app.
+4. Copy Client ID + Client Secret.
+5. Set env (recommended):
+   - `GOOGLE_OAUTH_CLIENT_ID=<...>`
+   - `GOOGLE_OAUTH_CLIENT_SECRET=<...>`
+6. Bind:
+   - `mailhub bind --provider google --scopes gmail,calendar,contacts`
+
+Outlook/Microsoft app creation (Mail + Calendar + Contacts):
+1. Microsoft Entra admin center -> App registrations -> New registration.
+2. Copy Application (client) ID.
+3. Authentication -> enable public client flows (device code).
+4. API permissions (Microsoft Graph, Delegated):
+   - `Mail.Read`, `Mail.Send`
+   - `Calendars.Read`
+   - `Contacts.Read`
+   - `offline_access`, `openid`, `profile`, `email`
+5. Grant consent per tenant policy.
+6. Set env:
+   - `MS_OAUTH_CLIENT_ID=<...>`
+7. Bind:
+   - `mailhub bind --provider microsoft --scopes mail,calendar,contacts`
+
+Apple/iCloud calendar + contacts:
+1. Current MailHub integration uses `caldav` / `carddav` provider routes.
+2. This flow uses CalDAV/CardDAV username + app-specific password (not OAuth client id/secret).
+3. Typical iCloud hosts:
+   - Calendar: `caldav.icloud.com`
+   - Contacts: `contacts.icloud.com`
+4. Bind commands:
+   - `mailhub bind --provider caldav --username "<apple_id_email>" --host "caldav.icloud.com"`
+   - `mailhub bind --provider carddav --username "<apple_id_email>" --host "contacts.icloud.com"`
+
 Runtime error-to-action map:
 运行时错误与修复动作映射：
 
@@ -147,6 +186,13 @@ Jobs and analysis:
 ```bash
 mailhub jobs run
 mailhub daily-summary
+mailhub cal agenda --days 3
+mailhub cal event --event view --datetime-range "this_week_remaining"
+mailhub cal event --event summary --datetime-range "past_week"
+mailhub cal event --event remind --datetime-range "tomorrow"
+mailhub cal event --event add --datetime "2026-03-02T09:30:00Z" --duration-minutes 45 --title "Project sync" --location "Zoom" --context "Weekly sync"
+mailhub cal event --event delete --provider-id "<provider_id>" --event-id "<provider_event_id>"
+mailhub cal event --event sync --datetime-range "2026-03-01T00:00:00Z/2026-03-08T00:00:00Z"
 mailhub analysis list --date today
 mailhub analysis record --message-id "<mailhub_id>" --title "<title>" --summary "<summary>" --tag "<tag>" --suggest-reply --suggestion "<text>" --source openclaw
 ```
@@ -157,6 +203,10 @@ Parameter notes:
 - `mailhub jobs run --config`: open wizard before run.
 - `mailhub jobs run --confirm-config`: confirm first-run settings and continue.
 - `mailhub jobs run --bind-if-needed/--no-bind-if-needed`: whether to auto-open bind menu when no account is linked.
+- `mailhub cal event --event <view|add|delete|sync|summary|remind>`: unified calendar action endpoint.
+- `--datetime`: normalized datetime ISO (`YYYY-MM-DDTHH:MM:SSZ`).
+- `--datetime-range`: `start/end`, JSON `{"start":"...","end":"..."}`, or keyword `today|tomorrow|past_week|this_week|this_week_remaining|next_week`.
+- `add` requires `--datetime` or `--datetime-range`; `delete` requires `--event-id`.
 
 Reply operations:
 
@@ -168,7 +218,7 @@ mailhub reply center
 mailhub reply compose --message-id "<mailhub_message_id>" --mode auto
 mailhub reply revise --id 2352 --mode optimize --content "<instructions>"
 mailhub send --id 2352 --confirm --message '{"Subject":"<subject>","to":"<to>","from":"<from>","context":"<context>"}'
-mailhub send --list --confirm
+mailhub send --list --confirm --bypass-message
 ```
 
 Parameter notes:
@@ -323,7 +373,7 @@ This is the acceptance checklist for OpenClaw routing.
 
 ## 11) Notes
 
-- Calendar create/update is not implemented in current MVP. `mailhub cal agenda` is available.
+- Calendar supports unified operations via `mailhub cal event`: `view/add/delete/sync/summary/remind`.
 - Billing analysis is MVP and depends on ingestion quality.
 - `no providers bound` means no mailbox account is currently linked.
 

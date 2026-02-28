@@ -105,6 +105,25 @@ CREATE TABLE IF NOT EXISTS message_analysis (
 );
 
 CREATE INDEX IF NOT EXISTS idx_message_analysis_tag ON message_analysis(tag);
+
+CREATE TABLE IF NOT EXISTS calendar_events (
+  provider_id TEXT NOT NULL,
+  provider_kind TEXT NOT NULL,    -- google|microsoft|caldav
+  event_id TEXT NOT NULL,         -- provider event id
+  title TEXT,
+  start_utc TEXT NOT NULL,        -- ISO8601 UTC
+  end_utc TEXT NOT NULL,          -- ISO8601 UTC
+  location TEXT,
+  status TEXT,
+  description TEXT,
+  raw_json TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(provider_id, event_id),
+  FOREIGN KEY(provider_id) REFERENCES providers(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_calendar_events_start ON calendar_events(start_utc);
+CREATE INDEX IF NOT EXISTS idx_calendar_events_provider_start ON calendar_events(provider_id, start_utc);
 """
 
 @dataclass
@@ -535,5 +554,115 @@ class DB:
                 (key, value, updated_at),
             )
             con.commit()
+        finally:
+            con.close()
+
+    def upsert_calendar_event(
+        self,
+        *,
+        provider_id: str,
+        provider_kind: str,
+        event_id: str,
+        title: str,
+        start_utc: str,
+        end_utc: str,
+        location: str,
+        status: str,
+        description: str,
+        raw_json: str,
+        updated_at: str,
+    ) -> None:
+        con = self.connect()
+        try:
+            con.execute(
+                """
+                INSERT INTO calendar_events (
+                  provider_id, provider_kind, event_id, title, start_utc, end_utc,
+                  location, status, description, raw_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(provider_id, event_id) DO UPDATE SET
+                  title=excluded.title,
+                  start_utc=excluded.start_utc,
+                  end_utc=excluded.end_utc,
+                  location=excluded.location,
+                  status=excluded.status,
+                  description=excluded.description,
+                  raw_json=excluded.raw_json,
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    provider_id,
+                    provider_kind,
+                    event_id,
+                    title,
+                    start_utc,
+                    end_utc,
+                    location,
+                    status,
+                    description,
+                    raw_json,
+                    updated_at,
+                ),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+    def delete_calendar_event(self, provider_id: str, event_id: str) -> None:
+        con = self.connect()
+        try:
+            con.execute(
+                "DELETE FROM calendar_events WHERE provider_id=? AND event_id=?",
+                (provider_id, event_id),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+    def list_calendar_events(
+        self,
+        *,
+        start_utc: str,
+        end_utc: str,
+        provider_id: str = "",
+        limit: int = 500,
+    ) -> List[Dict[str, Any]]:
+        con = self.connect()
+        try:
+            if provider_id:
+                rows = con.execute(
+                    """
+                    SELECT * FROM calendar_events
+                    WHERE provider_id=?
+                      AND end_utc >= ?
+                      AND start_utc <= ?
+                    ORDER BY start_utc ASC
+                    LIMIT ?
+                    """,
+                    (provider_id, start_utc, end_utc, limit),
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    """
+                    SELECT * FROM calendar_events
+                    WHERE end_utc >= ?
+                      AND start_utc <= ?
+                    ORDER BY start_utc ASC
+                    LIMIT ?
+                    """,
+                    (start_utc, end_utc, limit),
+                ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            con.close()
+
+    def find_calendar_events_by_event_id(self, event_id: str) -> List[Dict[str, Any]]:
+        con = self.connect()
+        try:
+            rows = con.execute(
+                "SELECT * FROM calendar_events WHERE event_id=? ORDER BY updated_at DESC",
+                (event_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
         finally:
             con.close()
