@@ -38,6 +38,8 @@ class FeatureToggles:
 
 @dataclass
 class RuntimeFlags:
+    config_reviewed: bool = False
+    config_reviewed_at: str = ""
     config_confirmed: bool = False
     config_confirmed_at: str = ""
 

@@ -1,11 +1,11 @@
 ---
 name: mailhub
 description: Unified email/calendar/contacts assistant with safe account linking, triage, reminders, replies, scheduling, and credit-card bill analysis.
-version: 1.3.6
+version: 1.3.7
 metadata:
   openclaw:
     emoji: "📬"
-    homepage: "https://github.com/<you>/openclaw-skill-mailhub"
+    homepage: "https://github.com/Nonosword/openclaw-skill-mailhub"
     requires:
       bins:
         - python3
@@ -29,6 +29,8 @@ metadata:
 - Sending or modifying external state requires explicit user confirmation unless auto-send is explicitly enabled.
 - For automation/scheduler integration, use exactly one entrypoint: `mailhub jobs run`.
 - When user asks for system status/health, always use `mailhub doctor` first.
+- `no providers bound` means no mail account/provider linked yet, not LLM/subagent setup.
+- MailHub supports multiple accounts per provider (Google/Microsoft/IMAP/etc.) and account-level capability flags.
 
 ## Safety (MUST)
 - Never ask for passwords in chat.
@@ -68,6 +70,13 @@ B) Managed OAuth Broker (one-click like iOS/macOS)
 - Preferred account-binding flow:
   mailhub bind
 - This menu provides numeric options (`1..5`) and routes to Google/Microsoft/IMAP/CalDAV/CardDAV safely.
+- In non-interactive execution, prefer:
+  - `mailhub bind --provider google --google-client-id "<CLIENT_ID>" --scopes gmail,calendar,contacts`
+  - `mailhub bind --provider microsoft --ms-client-id "<CLIENT_ID>" --scopes mail,calendar,contacts`
+  - `mailhub bind --provider imap --email <email> --imap-host <host> --smtp-host <host>`
+- Account management:
+  - list: `mailhub bind --list`
+  - update alias/capabilities: `mailhub bind --account-id "<id>" --alias "<name>" --is-mail --is-calendar --is-contacts`
 
 ## Conversation Setup Wizard
 When user requests setup:
@@ -86,6 +95,19 @@ When user requests setup:
    - `mailhub config --confirm`
 6) Start automation with only one command:
    - `mailhub jobs run`
+
+### Binding Reply Priority (Important)
+When user says "现在我们进行邮箱绑定" or equivalent:
+1) Do not start with individual `mailhub auth ...` commands.
+2) First ensure config review path:
+   - ask user to run `mailhub config` (review)
+   - then `mailhub config --confirm`
+3) Then prefer unified entry:
+   - `mailhub bind` (interactive)
+   - or `mailhub bind --provider ...` (non-interactive)
+4) Only mention direct `mailhub auth ...` commands as fallback/advanced mode.
+5) If user provides OAuth client id/secret in chat, apply them directly in bind command options and continue the same binding flow; do not ask user to restart menu selection.
+6) Ask for optional alias and set it during bind so outputs can use alias-first display.
 
 ## LLM Tasks Contract (STRICT JSON)
 ### Email classification
@@ -144,10 +166,11 @@ Auto-reply:
   mailhub billing month --month "YYYY-MM"
 
 ## Operational Routing (Agent Policy)
-- Setup/binding request: `mailhub config` -> `mailhub bind` -> `mailhub jobs run --confirm-config`.
+- Setup/binding request: `mailhub config` -> `mailhub config --confirm` -> `mailhub bind`.
 - Routine automation: only `mailhub jobs run`.
 - Manual single-task request: call existing independent commands (`inbox/triage/reply/billing/cal`).
 - Status/check request: always call `mailhub doctor` and answer from doctor output.
+- For account list/change request: use `mailhub bind --list` and `mailhub bind --account-id ...`.
 
 ## Classification Rules
 Use config/rules.email_tags.yml and prompts in config/prompts/.

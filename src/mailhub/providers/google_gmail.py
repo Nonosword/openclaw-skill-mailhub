@@ -6,6 +6,7 @@ import os
 import time
 import hashlib
 import secrets
+import socket
 import webbrowser
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -53,18 +54,32 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"OAuth completed. You can close this window.")
 
 
-def _local_server_get_code(port: int = 8765, timeout: int = 180) -> str:
-    httpd = HTTPServer(("127.0.0.1", port), _CallbackHandler)
-    httpd.timeout = 1
-    start = time.time()
-    while time.time() - start < timeout:
-        httpd.handle_request()
-        q = _CallbackHandler.query
-        if "code" in q and q["code"]:
-            return q["code"][0]
-        if "error" in q and q["error"]:
-            raise RuntimeError(f"OAuth error: {q['error'][0]}")
-    raise TimeoutError("OAuth timeout waiting for code")
+class _ReusableHTTPServer(HTTPServer):
+    allow_reuse_address = True
+
+
+def _local_server_get_code(port: int, timeout: int = 180) -> str:
+    _CallbackHandler.query = {}
+    httpd = _ReusableHTTPServer(("127.0.0.1", port), _CallbackHandler)
+    try:
+        httpd.timeout = 1
+        start = time.time()
+        while time.time() - start < timeout:
+            httpd.handle_request()
+            q = _CallbackHandler.query
+            if "code" in q and q["code"]:
+                return q["code"][0]
+            if "error" in q and q["error"]:
+                raise RuntimeError(f"OAuth error: {q['error'][0]}")
+        raise TimeoutError("OAuth timeout waiting for code")
+    finally:
+        httpd.server_close()
+
+
+def _pick_loopback_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
 
 
 def _build_scopes(scopes: str) -> List[str]:
@@ -87,18 +102,29 @@ def _pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
-def auth_google(scopes: str = "gmail,calendar,contacts") -> None:
+def auth_google(
+    scopes: str = "gmail,calendar,contacts",
+    *,
+    alias: str = "",
+    is_mail: bool = True,
+    is_calendar: bool = True,
+    is_contacts: bool = True,
+    client_id_override: str = "",
+    client_secret_override: str = "",
+) -> None:
     s = Settings.load()
     s.ensure_dirs()
     db = DB(s.db_path)
     db.init()
 
-    client_id = s.oauth.google_client_id or os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+    client_id = client_id_override or s.oauth.google_client_id or os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
     if not client_id:
         raise RuntimeError("Missing Google OAuth client id (settings oauth.google_client_id or GOOGLE_OAUTH_CLIENT_ID env var)")
 
-    client_secret = s.oauth.google_client_secret or os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
-    redirect_uri = "http://127.0.0.1:8765/callback"
+    client_secret = client_secret_override or s.oauth.google_client_secret or os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
+    env_port = os.environ.get("MAILHUB_GOOGLE_CALLBACK_PORT", "").strip()
+    port = int(env_port) if env_port else _pick_loopback_port()
+    redirect_uri = f"http://127.0.0.1:{port}/callback"
     scope_list = _build_scopes(scopes)
 
     verifier, challenge = _pkce_pair()
@@ -118,7 +144,7 @@ def auth_google(scopes: str = "gmail,calendar,contacts") -> None:
     assert url
     webbrowser.open(url)
 
-    code = _local_server_get_code()
+    code = _local_server_get_code(port=port)
 
     data = {
         "code": code,
@@ -145,7 +171,21 @@ def auth_google(scopes: str = "gmail,calendar,contacts") -> None:
     if refresh_token:
         SecretStore(s.secrets_path).set(f"{pid}:refresh_token", refresh_token)
     SecretStore(s.secrets_path).set(f"{pid}:expires_at", str(expires_at))
-    meta = json.dumps({"scopes": scope_list})
+    meta = json.dumps(
+        {
+            "alias": alias.strip(),
+            "client_id": client_id,
+            "oauth_scopes": scope_list,
+            "oauth_token_ref": f"{pid}:access_token",
+            "password_ref": "",
+            "imap_host": "",
+            "smtp_host": "",
+            "is_mail": bool(is_mail),
+            "is_calendar": bool(is_calendar),
+            "is_contacts": bool(is_contacts),
+            "status": "configured",
+        }
+    )
     db.upsert_provider(pid=pid, kind="google", email=email_addr, meta_json=meta, created_at=utc_now_iso())
 
 

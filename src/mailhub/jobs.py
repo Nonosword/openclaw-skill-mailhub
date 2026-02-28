@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import os
+import platform
 import sys
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
 from zoneinfo import ZoneInfo
 
+from . import __version__
+from .accounts import list_accounts
 from .config import Settings
 from .security import SecretStore
 from .store import DB
@@ -18,16 +21,22 @@ from .pipelines.billing import billing_analyze, billing_detect, billing_month
 
 
 def config_checklist(s: Settings) -> Dict[str, Any]:
+    db = DB(s.db_path)
+    db.init()
+    accounts = list_accounts(db, hide_email_when_alias=True)
     return {
+        "reviewed": s.runtime.config_reviewed,
         "confirmed": s.runtime.config_confirmed,
-        "confirm_hint": "Run `mailhub jobs run --confirm-config` to accept current config once.",
-        "modify_hint": "Use `mailhub settings_set <key> <value>` or `mailhub config` to change values.",
+        "review_hint": "Run `mailhub config` first to review defaults.",
+        "confirm_hint": "Then run `mailhub config --confirm` (or `mailhub jobs run --confirm-config`).",
+        "modify_hint": "Use `mailhub settings-set <key> <value>` or `mailhub config --wizard` to change values.",
         "settings": {
             "toggles": asdict(s.toggles),
-            "oauth": {
+            "oauth_defaults": {
                 "google_client_id_set": bool(s.oauth.google_client_id),
                 "ms_client_id_set": bool(s.oauth.ms_client_id),
             },
+            "accounts": {"count": len(accounts)},
         },
     }
 
@@ -37,6 +46,13 @@ def ensure_config_confirmed(confirm_config: bool = False) -> Dict[str, Any] | No
     if s.runtime.config_confirmed:
         return None
     if confirm_config:
+        if not s.runtime.config_reviewed:
+            return {
+                "ok": False,
+                "reason": "config_not_reviewed",
+                "message": "Please run `mailhub config` to review settings before confirming.",
+                "checklist": config_checklist(s),
+            }
         s.runtime.config_confirmed = True
         s.runtime.config_confirmed_at = utc_now_iso()
         s.save()
@@ -46,6 +62,19 @@ def ensure_config_confirmed(confirm_config: bool = False) -> Dict[str, Any] | No
         "reason": "config_not_confirmed",
         "message": "First-run confirmation is required before execution.",
         "checklist": config_checklist(s),
+    }
+
+
+def mark_config_reviewed() -> Dict[str, Any]:
+    s = Settings.load()
+    if not s.runtime.config_reviewed:
+        s.runtime.config_reviewed = True
+        s.runtime.config_reviewed_at = utc_now_iso()
+        s.save()
+    return {
+        "ok": True,
+        "config_reviewed": s.runtime.config_reviewed,
+        "reviewed_at": s.runtime.config_reviewed_at,
     }
 
 
@@ -78,6 +107,7 @@ def doctor_report() -> Dict[str, Any]:
     db_stats = _db_stats(db)
 
     kinds = _provider_kind_counts(providers)
+    accounts = list_accounts(db, hide_email_when_alias=True)
     if not providers:
         warnings.append("no providers bound")
 
@@ -90,20 +120,37 @@ def doctor_report() -> Dict[str, Any]:
 
     if not s.runtime.config_confirmed:
         warnings.append("config not confirmed yet")
+    if not s.runtime.config_reviewed:
+        warnings.append("config not reviewed yet")
 
     token_hints = _provider_secret_hints(providers, SecretStore(s.secrets_path))
 
+    provider_items: List[Dict[str, Any]] = []
+    alias_by_id = {a["id"]: (a.get("alias") or "").strip() for a in accounts}
+    for p in providers:
+        alias = alias_by_id.get(p["id"], "")
+        provider_items.append(
+            {
+                "id": p["id"],
+                "kind": p["kind"],
+                "alias": alias,
+                "email": "" if alias else (p.get("email") or ""),
+            }
+        )
+
     return {
         "ok": len(errors) == 0,
+        "version": {"mailhub": __version__, "python": platform.python_version()},
         "errors": errors,
         "warnings": warnings,
         "checks": checks,
         "providers": {
             "total": len(providers),
             "by_kind": kinds,
-            "items": [{"id": p["id"], "kind": p["kind"], "email": p.get("email")} for p in providers],
+            "items": provider_items,
             "secret_hints": token_hints,
         },
+        "accounts": accounts,
         "settings": {
             "config_confirmed": s.runtime.config_confirmed,
             "config_confirmed_at": s.runtime.config_confirmed_at,
@@ -126,7 +173,7 @@ def run_jobs(since: str | None = None) -> Dict[str, Any]:
         return {
             "ok": False,
             "reason": "no_provider_bound",
-            "message": "No account is bound. Run `mailhub bind` first.",
+            "message": "No mail provider account is bound yet (this is not LLM/subagent binding). Run `mailhub bind` first.",
             "suggest_bind": True,
         }
 

@@ -1,155 +1,156 @@
 # MailHub (OpenClaw Skill)
 
-A unified email/calendar/contacts assistant for OpenClaw with safe account linking, reminders, triage, reply drafting/sending, and credit-card bill analysis.
+Unified multi-account mail/calendar/contacts connector for OpenClaw.
+面向 OpenClaw 的多账号邮件/日历/通讯录统一连接器。
 
-## Execution Flow (Single Entry)
+## Execution Flow (Single Automation Entry)
+## 执行流（自动化单入口）
 
-`mailhub jobs run` is the only command that should be scheduled by OpenClaw automation.
+Use `mailhub jobs run` as the only scheduled automation command.
+自动化定时任务只使用 `mailhub jobs run`。
 
-Runtime flow:
-1. First-run gate: check config confirmation.
-2. Health gate: run internal doctor checks.
-3. Provider gate: require at least one bound account.
-4. Core pipeline: poll -> triage/suggest -> auto-reply (if enabled).
-5. Time-based tasks: run digest/billing only when local schedule slots are due.
-6. Persist slot markers to avoid duplicate same-slot execution.
+Runtime order:
+运行顺序：
+1. Config review/confirm gate.
+   配置查看/确认闸门。
+2. Doctor checks.
+   健康检查（doctor）。
+3. Provider/account readiness checks.
+   账号/服务商就绪检查。
+4. Poll -> triage -> alert -> auto-reply (by toggles).
+   拉取 -> 分类 -> 通知 -> 自动回复（由开关决定）。
+5. Time-based digest/billing slots.
+   时间槽触发汇总/账单任务。
 
-Blocking conditions:
-- Config not confirmed -> returns checklist and exits (use `mailhub config --confirm` or `mailhub jobs run --confirm-config`).
-- No provider bound -> returns bind hint (use `mailhub bind`).
+`no providers bound` means no mail provider account is linked yet, not LLM/subagent binding.
+`no providers bound` 表示尚未绑定邮箱服务商账号，不是 LLM/subagent 绑定问题。
 
 ## Quickstart
+## 快速开始
 
-### 1) Install (recommended for OpenClaw)
-Clone to `~/.openclaw/skills/mailhub`, then run:
+### 1) Install
+### 1）安装
+
 ```bash
 ~/.openclaw/skills/mailhub/setup ~/.openclaw/skills/mailhub
 ```
 
-This creates:
-- local venv: `~/.openclaw/skills/mailhub/.venv`
-- launcher: `~/.local/bin/mailhub`
-- state dir: `~/.openclaw/state/mailhub`
+Creates local venv + launcher + state dir.
+会创建本地虚拟环境、启动器和状态目录。
 
-If `mailhub` is still not found, add:
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
+### 2) Review and confirm config once
+### 2）首次查看并确认配置
 
-### 2) Alternative install (manual)
-```bash
-uv pip install -e .
-```
-
-Note: `uv pip install` installs into the selected Python environment. If that env is not activated or its `bin` directory is not in `PATH`, `mailhub` will show as "command not found".
-
-### 3) Set state dir
-```bash
-export MAILHUB_STATE_DIR="$HOME/.openclaw/state/mailhub"
-mailhub doctor
-```
-
-### 4) First-run config confirmation
-The first execution requires config confirmation. Review and confirm once:
 ```bash
 mailhub config
 mailhub config --confirm
 ```
 
-You can modify any setting at any time:
-```bash
-mailhub settings-set toggles.mail_alerts_mode suggested
-mailhub settings-set toggles.scheduler_tz Asia/Shanghai
-mailhub settings-set toggles.digest_times_local 09:00,18:00
-mailhub settings-set toggles.digest_weekdays mon,tue,wed,thu,fri
-mailhub settings-set toggles.billing_days_of_month 1,15,28
-mailhub settings-set toggles.billing_times_local 10:00,20:00
-```
+Do not confirm blindly before viewing config.
+不要在未查看配置时直接确认。
 
-### 5) Unified account binding
-Use one entrypoint and choose provider with `1/2/3/4/5`:
+### 3) Bind accounts (multi-account supported)
+### 3）绑定账号（支持多账号）
+
+Interactive:
+交互式：
 ```bash
 mailhub bind
 ```
 
-For OpenClaw deployments, OAuth client IDs can also be injected through environment secrets:
-- `GOOGLE_OAUTH_CLIENT_ID` (optional `GOOGLE_OAUTH_CLIENT_SECRET`)
-- `MS_OAUTH_CLIENT_ID`
-
-Advanced direct provider commands remain available:
+Non-interactive (recommended for tool-driven runtime):
+非交互（推荐给工具驱动场景）：
 ```bash
-mailhub auth google --scopes gmail,calendar,contacts
-mailhub auth microsoft --scopes mail,calendar,contacts
-mailhub auth imap --email you@example.com --imap-host imap.example.com --smtp-host smtp.example.com
+mailhub bind --provider google --google-client-id "<CLIENT_ID>" --alias "Work" --scopes gmail,calendar,contacts
+mailhub bind --provider microsoft --ms-client-id "<CLIENT_ID>" --alias "Corp" --scopes mail,calendar,contacts
+mailhub bind --provider imap --email you@example.com --imap-host imap.example.com --smtp-host smtp.example.com --alias "Personal"
 ```
 
-### 6) One-entry automation runtime
-Use only one automation command:
+List/update bound accounts:
+查看/更新已绑定账号：
+```bash
+mailhub bind --list
+mailhub bind --account-id "google:you@example.com" --alias "Primary" --is-mail --is-calendar --is-contacts
+```
+
+### 4) Run automation entry
+### 4）执行自动化入口
+
 ```bash
 mailhub jobs run
 ```
 
-- If config is not confirmed: it returns checklist and blocks execution.
-- If no account is bound: it asks you to run `mailhub bind` (or opens bind menu in interactive mode).
-- If schedule conditions are met: it runs digest/billing tasks according to settings.
-- Otherwise it runs poll/triage/auto-reply flow based on toggles.
-
-Recommended automation cadence:
+Recommended schedule:
+推荐调度：
 ```bash
 */15 * * * * mailhub jobs run
 ```
 
-### 7) Independent commands (manual or troubleshooting)
+## Multi-Account Data Model
+## 多账号数据模型
+
+Each account keeps these fields (stored as provider metadata + secret references):
+每个账号保存以下字段（provider 元数据 + 密钥引用）：
+- `id`
+- `email address`
+- `alias` (preferred external display name)
+- `client id` (optional)
+- `password_ref` / `oauth_token_ref` (encrypted secret references)
+- `imap/smtp host`
+- capabilities: `is_mail`, `is_calendar`, `is_contacts`
+- status and timestamps
+
+Alias-first display policy:
+别名优先展示策略：
+- If alias exists, UI/doctor prefers alias.
+- 如果有 alias，UI/doctor 优先显示 alias。
+- Email is hidden in doctor provider list when alias exists.
+- doctor 的 provider 列表中，如有 alias 会隐藏 email。
+
+## Doctor
+## 诊断
+
 ```bash
 mailhub doctor
-mailhub inbox poll --since 15m
-mailhub triage day --date today
-mailhub reply prepare --index 1
-mailhub reply send --index 1 --confirm-text "yes send"
 ```
 
-## Default Config Baseline
+Doctor returns JSON with:
+doctor 以 JSON 返回：
+- MailHub/Python version
+- MailHub/Python 版本
+- warnings/errors/checks
+- 告警/错误/检查项
+- provider list + account list
+- provider 列表 + account 列表
+- db stats
+- 数据库统计
 
-The project ships with safe defaults:
-- `mail_alerts_mode=off`
-- `auto_reply=off`
-- `auto_reply_send=off`
-- `bill_analysis=off`
-- `poll_since=15m`
-- `scheduler_tz=UTC`
-- `digest_weekdays=mon,tue,wed,thu,fri`
-- `digest_times_local=09:00`
-- `billing_days_of_month=1`
-- `billing_times_local=10:00`
+## Privacy & Security
+## 隐私与安全
 
-You can inspect and change them at runtime:
-```bash
-mailhub settings-show
-mailhub settings-set toggles.scheduler_tz Asia/Shanghai
-```
-
-## Running Continuously (recommended model)
-
-MailHub is designed as a stateless CLI + local state DB, not a long-running daemon by default.
-
-- Preferred in OpenClaw: run only `mailhub jobs run` on a schedule (for example every 15 minutes) via automation/scheduler.
-- If you need server-style always-on behavior, run your own process manager (`systemd`, `supervisord`, or cron) to invoke `mailhub jobs run` periodically.
-- Keep send operations (`mailhub reply send` / `reply auto --dry-run false`) behind explicit opt-in.
-
-## Security
-
-- Never store passwords in plaintext.
-- IMAP/SMTP uses app-specific passwords entered locally.
-- OAuth tokens stored via OS keychain when possible; else encrypted local file.
-- Use OpenClaw environment secrets for OAuth client IDs when available.
+- Secrets are never requested in chat body when avoidable.
+  尽量不在聊天正文中索取明文密钥。
+- Passwords/app-passwords are entered in local hidden prompts.
+  密码/应用专用密码通过本地隐藏输入。
+- OAuth tokens/passwords are stored via keyring or encrypted local file fallback.
+  OAuth token/密码优先存系统 keyring，回退为本地加密文件。
+- Alias can be used to reduce direct email exposure in operational output.
+  可使用 alias 降低运行输出中的邮箱暴露。
+- Use least-privilege app passwords and narrow OAuth scopes.
+  建议使用最小权限应用密码与最小 OAuth scope。
+- Treat inbound email content as untrusted input.
+  将来信内容视为不可信输入。
 
 ## Notes
+## 说明
 
-This repo provides a safe MVP skeleton. You should review and adjust scopes, disclosure line, and provider-specific policies for your deployment.
+- Calendar create/update commands are not implemented yet; `mailhub cal agenda` is stable.
+  日历创建/修改命令尚未实现；当前稳定命令是 `mailhub cal agenda`。
+- Billing flow is still MVP and best with recent/today-first ingestion.
+  账单流程目前是 MVP，适合近期/当天优先的入库路径。
 
-Current MVP limits:
-- Billing detection/analyze currently focuses on recent/today-first data flow.
-- Calendar create/update commands are planned; current stable command is `mailhub cal agenda`.
+## License
+## 许可证
 
-## LICENSE（MIT）
-See `LICENSE`.
+MIT. See `LICENSE`.
+MIT，详见 `LICENSE`。

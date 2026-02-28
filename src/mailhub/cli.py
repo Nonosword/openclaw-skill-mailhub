@@ -3,13 +3,14 @@ from __future__ import annotations
 import typer
 from rich.console import Console
 
-from .bind import bind_menu
+from .bind import bind_list, bind_menu, bind_provider, bind_update_account
 from .cli_wizard import run_wizard
 from .config import Settings
 from .jobs import (
     config_checklist,
     doctor_report,
     ensure_config_confirmed,
+    mark_config_reviewed,
     run_jobs,
     should_offer_bind_interactive,
 )
@@ -47,6 +48,7 @@ def config_cmd(
     confirm: bool = typer.Option(False, "--confirm", help="Mark current config as confirmed."),
     wizard: bool = typer.Option(False, "--wizard", help="Open interactive settings wizard."),
 ):
+    console.print(mark_config_reviewed())
     if wizard:
         run_wizard()
     if confirm:
@@ -62,13 +64,65 @@ def wizard_cmd():
 
 
 @app.command("bind")
-def bind_cmd(confirm_config: bool = typer.Option(False, "--confirm-config", help="Confirm default config and continue binding.")):
+def bind_cmd(
+    confirm_config: bool = typer.Option(False, "--confirm-config", help="Confirm config and continue binding."),
+    list_accounts: bool = typer.Option(False, "--list", help="List configured accounts."),
+    provider: str | None = typer.Option(None, "--provider", help="google|microsoft|imap|caldav|carddav"),
+    account_id: str | None = typer.Option(None, "--account-id", help="Existing account id to update."),
+    scopes: str | None = typer.Option(None, "--scopes", help="OAuth scopes, e.g. gmail,calendar,contacts"),
+    google_client_id: str | None = typer.Option(None, "--google-client-id", help="Google OAuth client id."),
+    google_client_secret: str | None = typer.Option(None, "--google-client-secret", help="Google OAuth client secret."),
+    ms_client_id: str | None = typer.Option(None, "--ms-client-id", help="Microsoft OAuth client id."),
+    email: str | None = typer.Option(None, "--email", help="Email for IMAP binding."),
+    imap_host: str | None = typer.Option(None, "--imap-host", help="IMAP host for IMAP binding."),
+    smtp_host: str | None = typer.Option(None, "--smtp-host", help="SMTP host for IMAP binding."),
+    username: str | None = typer.Option(None, "--username", help="Username for CalDAV/CardDAV."),
+    host: str | None = typer.Option(None, "--host", help="Host for CalDAV/CardDAV."),
+    alias: str | None = typer.Option(None, "--alias", help="Account alias for external display."),
+    is_mail: bool | None = typer.Option(None, "--is-mail/--no-mail", help="Enable/disable mail capability."),
+    is_calendar: bool | None = typer.Option(None, "--is-calendar/--no-calendar", help="Enable/disable calendar capability."),
+    is_contacts: bool | None = typer.Option(None, "--is-contacts/--no-contacts", help="Enable/disable contacts capability."),
+):
     pre = ensure_config_confirmed(confirm_config=confirm_config)
     if pre and not pre.get("ok", False):
         console.print(pre)
         raise typer.Exit(code=2)
     if pre and pre.get("ok"):
         console.print(pre)
+    if list_accounts:
+        console.print(bind_list())
+        return
+    if account_id:
+        console.print(
+            bind_update_account(
+                account_id=account_id,
+                alias=alias,
+                is_mail=is_mail,
+                is_calendar=is_calendar,
+                is_contacts=is_contacts,
+            )
+        )
+        return
+    if provider:
+        console.print(
+            bind_provider(
+                provider=provider,
+                scopes=scopes,
+                google_client_id=google_client_id,
+                google_client_secret=google_client_secret,
+                ms_client_id=ms_client_id,
+                email=email,
+                imap_host=imap_host,
+                smtp_host=smtp_host,
+                username=username,
+                host=host,
+                alias=alias,
+                is_mail=is_mail,
+                is_calendar=is_calendar,
+                is_contacts=is_contacts,
+            )
+        )
+        return
     console.print(bind_menu())
 
 

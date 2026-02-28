@@ -38,7 +38,28 @@ class IMAPConfig:
     smtp_starttls: bool = True
 
 
-def auth_imap(email: str, imap_host: str, smtp_host: str) -> None:
+def _imap_cfg_from_meta(meta_json: str) -> IMAPConfig:
+    raw = json.loads(meta_json)
+    return IMAPConfig(
+        email=raw["email"],
+        imap_host=raw["imap_host"],
+        smtp_host=raw["smtp_host"],
+        imap_port=int(raw.get("imap_port", 993)),
+        smtp_port=int(raw.get("smtp_port", 587)),
+        smtp_starttls=bool(raw.get("smtp_starttls", True)),
+    )
+
+
+def auth_imap(
+    email: str,
+    imap_host: str,
+    smtp_host: str,
+    *,
+    alias: str = "",
+    is_mail: bool = True,
+    is_calendar: bool = False,
+    is_contacts: bool = False,
+) -> None:
     """
     Store IMAP/SMTP config; prompt for app password locally and store in secrets.
     """
@@ -52,7 +73,20 @@ def auth_imap(email: str, imap_host: str, smtp_host: str) -> None:
 
     cfg = IMAPConfig(email=email, imap_host=imap_host, smtp_host=smtp_host)
     pid = f"imap:{email}"
-    meta = json.dumps(cfg.__dict__)
+    meta = json.dumps(
+        {
+            **cfg.__dict__,
+            "alias": alias.strip(),
+            "client_id": "",
+            "oauth_scopes": [],
+            "oauth_token_ref": "",
+            "password_ref": f"{pid}:password",
+            "is_mail": bool(is_mail),
+            "is_calendar": bool(is_calendar),
+            "is_contacts": bool(is_contacts),
+            "status": "configured",
+        }
+    )
 
     SecretStore(s.secrets_path).set(f"{pid}:password", app_password)
     db.upsert_provider(pid=pid, kind="imap", email=email, meta_json=meta, created_at=utc_now_iso())
@@ -84,7 +118,7 @@ def list_recent_headers(since: str = "15m", mailbox: str = "INBOX") -> List[Dict
 
     for p in providers:
         pid = p["id"]
-        cfg = IMAPConfig(**json.loads(p["meta_json"]))
+        cfg = _imap_cfg_from_meta(p["meta_json"])
         password = SecretStore(s.secrets_path).get(f"{pid}:password")
         if not password:
             continue
@@ -151,7 +185,7 @@ def send_email(from_addr: str, to_addr: str, subject: str, body: str) -> Dict[st
 
     p = providers[0]
     pid = p["id"]
-    cfg = IMAPConfig(**json.loads(p["meta_json"]))
+    cfg = _imap_cfg_from_meta(p["meta_json"])
     password = SecretStore(s.secrets_path).get(f"{pid}:password")
     if not password:
         raise RuntimeError("Missing SMTP password in secrets store")
@@ -189,7 +223,7 @@ def fetch_and_store_recent_full(since: str = "36h", mailbox: str = "INBOX") -> D
     saved = []
     for p in providers:
         pid = p["id"]
-        cfg = IMAPConfig(**json.loads(p["meta_json"]))
+        cfg = _imap_cfg_from_meta(p["meta_json"])
         password = store.get(f"{pid}:password")
         if not password:
             continue

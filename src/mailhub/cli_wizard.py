@@ -12,6 +12,11 @@ console = Console()
 def run_wizard() -> dict:
     s = Settings.load()
     s.ensure_dirs()
+    if not s.runtime.config_reviewed:
+        from .utils.time import utc_now_iso
+
+        s.runtime.config_reviewed = True
+        s.runtime.config_reviewed_at = utc_now_iso()
 
     console.print("[bold]MailHub setup wizard[/bold]")
     name = typer.prompt("Agent display name", default=s.toggles.agent_display_name)

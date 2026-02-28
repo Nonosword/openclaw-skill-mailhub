@@ -37,13 +37,21 @@ def _build_scopes(scopes: str) -> str:
     return " ".join(sorted(set(s)))
 
 
-def auth_microsoft(scopes: str = "mail,calendar,contacts") -> None:
+def auth_microsoft(
+    scopes: str = "mail,calendar,contacts",
+    *,
+    alias: str = "",
+    is_mail: bool = True,
+    is_calendar: bool = True,
+    is_contacts: bool = True,
+    client_id_override: str = "",
+) -> None:
     s = Settings.load()
     s.ensure_dirs()
     db = DB(s.db_path)
     db.init()
 
-    client_id = s.oauth.ms_client_id or os.environ.get("MS_OAUTH_CLIENT_ID")
+    client_id = client_id_override or s.oauth.ms_client_id or os.environ.get("MS_OAUTH_CLIENT_ID")
     if not client_id:
         raise RuntimeError("Missing Microsoft OAuth client id (settings oauth.ms_client_id or MS_OAUTH_CLIENT_ID env var)")
 
@@ -97,7 +105,27 @@ def auth_microsoft(scopes: str = "mail,calendar,contacts") -> None:
         store.set(f"{pid}:refresh_token", refresh)
     store.set(f"{pid}:expires_at", str(expires_at))
 
-    db.upsert_provider(pid=pid, kind="microsoft", email=email, meta_json=json.dumps({"scopes": scope_str.split()}), created_at=utc_now_iso())
+    db.upsert_provider(
+        pid=pid,
+        kind="microsoft",
+        email=email,
+        meta_json=json.dumps(
+            {
+                "alias": alias.strip(),
+                "client_id": client_id,
+                "oauth_scopes": scope_str.split(),
+                "oauth_token_ref": f"{pid}:access_token",
+                "password_ref": "",
+                "imap_host": "",
+                "smtp_host": "",
+                "is_mail": bool(is_mail),
+                "is_calendar": bool(is_calendar),
+                "is_contacts": bool(is_contacts),
+                "status": "configured",
+            }
+        ),
+        created_at=utc_now_iso(),
+    )
 
 
 def _refresh_if_needed(pid: str, store: SecretStore) -> str:

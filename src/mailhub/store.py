@@ -135,6 +135,14 @@ class DB:
         finally:
             con.close()
 
+    def get_provider(self, pid: str) -> Optional[Dict[str, Any]]:
+        con = self.connect()
+        try:
+            row = con.execute("SELECT * FROM providers WHERE id=?", (pid,)).fetchone()
+            return dict(row) if row else None
+        finally:
+            con.close()
+
     def upsert_message(self, msg: Dict[str, Any]) -> None:
         con = self.connect()
         try:
