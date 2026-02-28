@@ -5,6 +5,7 @@ import platform
 import sys
 from dataclasses import asdict
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 from zoneinfo import ZoneInfo
 
@@ -21,12 +22,48 @@ from .pipelines.billing import billing_analyze, billing_detect, billing_month
 from .pipelines.summary import daily_summary
 
 
+def _runtime_mode_info(s: Settings) -> Dict[str, Any]:
+    mode = s.effective_mode()
+    info: Dict[str, Any] = {"mode": mode}
+    if mode != "standalone":
+        return info
+
+    models = s.load_standalone_models()
+    runner = models.get("runner", {}) if isinstance(models, dict) else {}
+    agent = models.get("agent", {}) if isinstance(models, dict) else {}
+    defaults = models.get("defaults", {}) if isinstance(models, dict) else {}
+    if not isinstance(runner, dict):
+        runner = {}
+    if not isinstance(agent, dict):
+        agent = {}
+    if not isinstance(defaults, dict):
+        defaults = {}
+
+    cmd = str(runner.get("command") or "").strip()
+    agent_id = str(agent.get("id") or "").strip()
+    production_model = str(
+        defaults.get("primary_model") or agent.get("model") or agent_id or ""
+    ).strip()
+    image_model = str(defaults.get("image_model") or "").strip()
+    info["standalone"] = {
+        "agent_id": agent_id,
+        "production_model": production_model,
+        "image_model": image_model,
+        "runner_command_set": bool(cmd),
+    }
+    return info
+
+
 def config_checklist(s: Settings) -> Dict[str, Any]:
     db = DB(s.db_path)
     db.init()
     accounts = list_accounts(db, hide_email_when_alias=True)
     google_env = bool(os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip())
     ms_env = bool(os.environ.get("MS_OAUTH_CLIENT_ID", "").strip())
+    models_path = Path(os.path.expandvars(s.effective_standalone_models_path())).expanduser()
+    models = s.load_standalone_models()
+    runner = models.get("runner", {}) if isinstance(models, dict) else {}
+    runner_cmd_set = bool(str(runner.get("command") or "").strip()) if isinstance(runner, dict) else False
     return {
         "reviewed": s.runtime.config_reviewed,
         "confirmed": s.runtime.config_confirmed,
@@ -38,7 +75,11 @@ def config_checklist(s: Settings) -> Dict[str, Any]:
             "routing": {
                 "mode": s.effective_mode(),
                 "openclaw_json_path": s.effective_openclaw_json_path(),
-                "standalone_agent_cmd_set": bool(s.effective_standalone_agent_cmd()),
+                "standalone_agent_enabled": s.effective_standalone_agent_enabled(),
+                "standalone_models_path": s.effective_standalone_models_path(),
+                "standalone_models_exists": models_path.exists(),
+                "standalone_runner_command_set": runner_cmd_set,
+                "runtime": _runtime_mode_info(s),
             },
             "oauth_defaults": {
                 "google_client_id_set": bool(s.effective_google_client_id()),
@@ -166,6 +207,8 @@ def doctor_report(*, full: bool = False) -> Dict[str, Any]:
             "config_confirmed_at": s.runtime.config_confirmed_at,
             "scheduler_tz": s.toggles.scheduler_tz,
             "mode": s.effective_mode(),
+            "standalone_models_path": s.effective_standalone_models_path(),
+            "runtime": _runtime_mode_info(s),
         },
         "db_stats": db_stats,
     }
@@ -193,15 +236,17 @@ def run_jobs(since: str | None = None) -> Dict[str, Any]:
     s = Settings.load()
     db = DB(s.db_path)
     db.init()
+    runtime = _runtime_mode_info(s)
 
     doctor = doctor_report()
     if not doctor["ok"]:
-        return {"ok": False, "reason": "doctor_failed", "doctor": doctor}
+        return {"ok": False, "reason": "doctor_failed", "runtime": runtime, "doctor": doctor}
 
     if doctor["providers"]["total"] == 0:
         return {
             "ok": False,
             "reason": "no_provider_bound",
+            "runtime": runtime,
             "message": "No mail provider account is bound yet (this is not LLM/subagent binding). Run `mailhub bind` first.",
             "suggest_bind": True,
         }
@@ -210,6 +255,7 @@ def run_jobs(since: str | None = None) -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "ok": True,
         "since": effective_since,
+        "runtime": runtime,
         "steps": {},
         "schedule": {},
     }

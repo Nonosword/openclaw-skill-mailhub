@@ -3,7 +3,7 @@ from __future__ import annotations
 import email.utils
 import sys
 from email.message import EmailMessage
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..agent_bridge import draft_reply_with_agent
 from ..config import Settings
@@ -59,6 +59,12 @@ def _draft_reply(subject: str, body_hint: str, disclosure: str, incoming: Dict[s
             },
             "hint": body_hint,
             "must_append_disclosure": disclosure,
+            "privacy_constraints": [
+                "Do not include user private data.",
+                "Do not reveal any information outside the current email being replied to.",
+                "Do not use data from other emails, accounts, contacts, calendar events, or billing records.",
+                "If uncertain whether content is out of scope, omit it.",
+            ],
         }
     )
     if agent_out:
@@ -77,16 +83,75 @@ def _draft_reply(subject: str, body_hint: str, disclosure: str, incoming: Dict[s
     return subj, body
 
 
-def reply_prepare(index: int) -> Dict[str, Any]:
+def _reply_subject(source_subject: str) -> str:
+    subj = (source_subject or "").strip()
+    if not subj.lower().startswith("re:"):
+        subj = "Re: " + subj
+    return subj
+
+
+def _ensure_disclosure(text: str, disclosure: str) -> str:
+    body = (text or "").strip()
+    if disclosure and not body.endswith(disclosure):
+        body = (body.rstrip() + "\n\n" + disclosure).strip()
+    return body + "\n"
+
+
+def _build_draft_for_mode(
+    *,
+    mode: str,
+    message: Dict[str, Any],
+    disclosure: str,
+    content: str = "",
+) -> Tuple[str, str]:
+    m = (mode or "auto").strip().lower()
+    subject = message.get("subject") or ""
+    if m == "auto":
+        return _draft_reply(subject, "Thanks for your email.", disclosure, incoming=message)
+    if m == "optimize":
+        hint = content.strip() or "Please produce a concise, clear, empathetic reply."
+        return _draft_reply(subject, hint, disclosure, incoming=message)
+    if m == "raw":
+        base = content.strip() or "Thanks for your email."
+        return _reply_subject(subject), _ensure_disclosure(base, disclosure)
+    raise ValueError("Unsupported mode. Use auto|optimize|raw.")
+
+
+def _pending_item_by_id(db: DB, reply_id: int) -> Dict[str, Any]:
+    item = db.get_reply_queue_item(reply_id)
+    if not item:
+        raise ValueError(f"Reply id not found: {reply_id}")
+    if (item.get("status") or "") != "pending":
+        raise ValueError(f"Reply id is not pending: {reply_id}")
+    return item
+
+
+def _resolve_pending_reply_target(
+    db: DB, *, index: int | None = None, reply_id: int | None = None
+) -> Tuple[Dict[str, Any], int]:
+    pending = db.list_reply_queue(status="pending", limit=500)
+    if not pending:
+        raise RuntimeError("No pending replies in queue.")
+
+    if reply_id is not None:
+        for i, item in enumerate(pending, start=1):
+            if int(item.get("id") or 0) == int(reply_id):
+                return item, i
+        raise ValueError(f"Reply id not found in pending queue: {reply_id}")
+
+    if index is None:
+        raise ValueError("Either --id or --index is required.")
+    if index < 1 or index > len(pending):
+        raise ValueError("Index out of range")
+    return pending[index - 1], index
+
+
+def reply_prepare(index: int | None = None, reply_id: int | None = None) -> Dict[str, Any]:
     s = Settings.load()
     db = DB(s.db_path)
     db.init()
 
-    pending = db.list_reply_queue(status="pending", limit=200)
-    if index < 1 or index > len(pending):
-        raise ValueError("Index out of range")
-
-    item = pending[index - 1]
+    item, resolved_index = _resolve_pending_reply_target(db, index=index, reply_id=reply_id)
     msg = db.get_message(item["message_id"])
     if not msg:
         raise RuntimeError("Message not found")
@@ -98,19 +163,29 @@ def reply_prepare(index: int) -> Dict[str, Any]:
 
     to_addr = _extract_reply_to(msg.get("from_addr") or "")
     return {
+        "index": resolved_index,
+        "id": int(item["id"]),
         "queue_id": item["id"],
         "message_id": item["message_id"],
+        "selected_by": "id" if reply_id is not None else "index",
+        "resolved_command": f"mailhub reply prepare --id {int(item['id'])}",
         "preview": {
             "from": (_choose_sender_for_message(db, msg.get("provider_id") or "") or {}).get("email") or "",
             "to": to_addr,
             "subject": subj,
             "body": body,
         },
-        "note": "Confirm before sending: reply send --confirm-text must include 'send'.",
+        "note": "Confirm before sending: use reply send --id <ID> --confirm-text '<text with send>'.",
     }
 
 
-def reply_send(index: int, confirm_text: str, send_mode: str = "manual") -> Dict[str, Any]:
+def reply_send(
+    index: int | None = None,
+    *,
+    reply_id: int | None = None,
+    confirm_text: str,
+    send_mode: str = "manual",
+) -> Dict[str, Any]:
     """
     Sends the prepared draft for the index-th pending item.
     confirm_text is a safety gate (should be user-provided in chat).
@@ -122,11 +197,7 @@ def reply_send(index: int, confirm_text: str, send_mode: str = "manual") -> Dict
     db = DB(s.db_path)
     db.init()
 
-    pending = db.list_reply_queue(status="pending", limit=200)
-    if index < 1 or index > len(pending):
-        raise ValueError("Index out of range")
-
-    rq = pending[index - 1]
+    rq, resolved_index = _resolve_pending_reply_target(db, index=index, reply_id=reply_id)
     if not rq.get("drafted_body"):
         raise RuntimeError("Draft not prepared. Run reply prepare first.")
 
@@ -156,7 +227,197 @@ def reply_send(index: int, confirm_text: str, send_mode: str = "manual") -> Dict
         raise RuntimeError(f"Unsupported sender provider: {provider['kind']}")
 
     db.mark_reply_status(rq["id"], "sent", utc_now_iso(), send_mode=send_mode)
-    return {"ok": True, "sent_via": provider["kind"], "to": to_addr, "send_mode": send_mode, "result": send_result}
+    return {
+        "ok": True,
+        "index": resolved_index,
+        "id": int(rq["id"]),
+        "selected_by": "id" if reply_id is not None else "index",
+        "resolved_command": f"mailhub reply send --id {int(rq['id'])} --confirm-text \"send\"",
+        "sent_via": provider["kind"],
+        "to": to_addr,
+        "send_mode": send_mode,
+        "result": send_result,
+    }
+
+
+def send_queue_list(limit: int = 200) -> Dict[str, Any]:
+    s = Settings.load()
+    db = DB(s.db_path)
+    db.init()
+    pending = db.list_reply_queue(status="pending", limit=limit)
+    items: List[Dict[str, Any]] = []
+    not_ready: List[int] = []
+    for x in pending:
+        rid = int(x.get("id") or 0)
+        if not (x.get("drafted_subject") or "").strip() or not (x.get("drafted_body") or "").strip():
+            not_ready.append(rid)
+            continue
+        source_title = x.get("subject") or ""
+        new_title = (x.get("drafted_subject") or "").strip() or _reply_subject(source_title)
+        provider = _choose_sender_for_message(db, x.get("provider_id") or "")
+        sender_addr = (provider or {}).get("email") or ""
+        items.append(
+            {
+                "id": rid,
+                "new_title": new_title,
+                "source_title": source_title,
+                "from_address": x.get("from_addr") or "",
+                "sender_address": sender_addr,
+                "message_id": x.get("message_id") or "",
+                "display": f"(Id: {rid}) {new_title}",
+                "send_cmd": f"mailhub send --id {rid} --confirm",
+            }
+        )
+    return {
+        "ok": True,
+        "count": len(items),
+        "items": items,
+        "not_ready_count": len(not_ready),
+        "not_ready_ids": not_ready,
+    }
+
+
+def send_queue_send_one(reply_id: int, confirm: bool) -> Dict[str, Any]:
+    if not confirm:
+        return {
+            "ok": False,
+            "reason": "confirm_required",
+            "hint": f"Run `mailhub send --id {reply_id} --confirm` to send.",
+        }
+    return reply_send(reply_id=reply_id, confirm_text="send")
+
+
+def send_queue_send_all(confirm: bool, limit: int = 500) -> Dict[str, Any]:
+    if not confirm:
+        return {
+            "ok": False,
+            "reason": "confirm_required",
+            "hint": "Run `mailhub send --list --confirm` to send all pending drafts.",
+        }
+    queue = send_queue_list(limit=limit)
+    sent: List[Dict[str, Any]] = []
+    failed: List[Dict[str, Any]] = []
+    for item in queue.get("items", []):
+        rid = int(item.get("id") or 0)
+        if rid <= 0:
+            continue
+        try:
+            sent.append(reply_send(reply_id=rid, confirm_text="send"))
+        except Exception as exc:
+            failed.append({"id": rid, "error": str(exc)})
+    return {
+        "ok": len(failed) == 0,
+        "sent_count": len(sent),
+        "failed_count": len(failed),
+        "sent": sent,
+        "failed": failed,
+        "remaining": send_queue_list(limit=limit),
+    }
+
+
+def reply_compose(
+    *,
+    message_id: str,
+    mode: str = "auto",
+    content: str = "",
+    review: bool = True,
+) -> Dict[str, Any]:
+    s = Settings.load()
+    db = DB(s.db_path)
+    db.init()
+    msg = db.get_message(message_id)
+    if not msg:
+        return {"ok": False, "reason": "message_not_found", "message_id": message_id}
+
+    rq_id = db.enqueue_reply(message_id, "pending", "manual compose", utc_now_iso())
+    subj, body = _build_draft_for_mode(mode=mode, message=msg, disclosure=s.disclosure_text(), content=content)
+    db.update_reply_draft(rq_id, subj, body, utc_now_iso())
+
+    if review and sys.stdin.isatty():
+        while True:
+            cur = _pending_item_by_id(db, rq_id)
+            print("")
+            print(f"Draft review for Id {rq_id}")
+            print(f"Subject: {cur.get('drafted_subject') or ''}")
+            print("a) confirm")
+            print("b) optimize")
+            print("c) manual edit")
+            choice = input("Select [a]: ").strip().lower() or "a"
+            if choice in ("a", "confirm"):
+                break
+            if choice in ("b", "optimize"):
+                hint = input("Optimization hint: ").strip()
+                subj2, body2 = _build_draft_for_mode(
+                    mode="optimize",
+                    message=msg,
+                    disclosure=s.disclosure_text(),
+                    content=hint,
+                )
+                db.update_reply_draft(rq_id, subj2, body2, utc_now_iso())
+                continue
+            if choice in ("c", "manual", "edit"):
+                subj_new = input(f"New subject [{cur.get('drafted_subject') or _reply_subject(msg.get('subject') or '')}]: ").strip()
+                body_new = input("New body (single-line input, disclosure auto-appended): ").strip()
+                subj3 = subj_new or (cur.get("drafted_subject") or _reply_subject(msg.get("subject") or ""))
+                body3 = _ensure_disclosure(body_new or (cur.get("drafted_body") or ""), s.disclosure_text())
+                db.update_reply_draft(rq_id, subj3, body3, utc_now_iso())
+                continue
+
+    cur = _pending_item_by_id(db, rq_id)
+    return {
+        "ok": True,
+        "id": rq_id,
+        "message_id": message_id,
+        "new_title": cur.get("drafted_subject") or "",
+        "source_title": msg.get("subject") or "",
+        "from_address": msg.get("from_addr") or "",
+        "sender_address": (_choose_sender_for_message(db, msg.get("provider_id") or "") or {}).get("email") or "",
+        "review_options": {
+            "a": "confirm",
+            "b": "optimize",
+            "c": "manual_edit",
+        },
+        "next_steps": [
+            f"mailhub reply revise --id {rq_id} --mode optimize --content \"<instructions>\"",
+            f"mailhub reply revise --id {rq_id} --mode raw --content \"<manual body>\"",
+            f"mailhub send --id {rq_id} --confirm",
+        ],
+        "send_queue": send_queue_list(),
+    }
+
+
+def reply_revise(
+    *,
+    reply_id: int,
+    mode: str,
+    content: str = "",
+    review: bool = False,
+) -> Dict[str, Any]:
+    s = Settings.load()
+    db = DB(s.db_path)
+    db.init()
+    cur = _pending_item_by_id(db, reply_id)
+    msg = db.get_message(cur["message_id"])
+    if not msg:
+        return {"ok": False, "reason": "message_not_found", "message_id": cur["message_id"]}
+
+    subj, body = _build_draft_for_mode(mode=mode, message=msg, disclosure=s.disclosure_text(), content=content)
+    db.update_reply_draft(reply_id, subj, body, utc_now_iso())
+
+    if review and sys.stdin.isatty():
+        return reply_compose(message_id=cur["message_id"], mode=mode, content=content, review=True)
+
+    updated = _pending_item_by_id(db, reply_id)
+    return {
+        "ok": True,
+        "id": reply_id,
+        "mode": mode,
+        "new_title": updated.get("drafted_subject") or "",
+        "source_title": updated.get("subject") or "",
+        "from_address": updated.get("from_addr") or "",
+        "sender_address": (_choose_sender_for_message(db, updated.get("provider_id") or "") or {}).get("email") or "",
+        "send_queue": send_queue_list(),
+    }
 
 
 def reply_auto(since: str = "15m", dry_run: bool = True) -> Dict[str, Any]:
@@ -176,7 +437,7 @@ def reply_auto(since: str = "15m", dry_run: bool = True) -> Dict[str, Any]:
     sent = []
     drafted = []
 
-    for i, rq in enumerate(pending, start=1):
+    for rq in pending:
         # draft if missing
         if not rq.get("drafted_body"):
             msg = db.get_message(rq["message_id"]) or {}
@@ -186,7 +447,7 @@ def reply_auto(since: str = "15m", dry_run: bool = True) -> Dict[str, Any]:
 
         if not dry_run:
             # send with implicit confirmation (user enabled auto_reply)
-            reply_send(index=i, confirm_text="send (auto)", send_mode="auto")
+            reply_send(reply_id=int(rq["id"]), confirm_text="send (auto)", send_mode="auto")
 
             sent.append({"queue_id": rq["id"]})
 
@@ -198,7 +459,7 @@ def reply_sent_list(date: str = "today", limit: int = 50) -> Dict[str, Any]:
     db = DB(Settings.load().db_path)
     db.init()
     rows = db.list_reply_queue_by_message_date(day, status="sent", limit=limit)
-    return {"ok": True, "day": day, "count": len(rows), "items": _indexed(rows)}
+    return {"ok": True, "day": day, "count": len(rows), "items": _indexed(rows, db)}
 
 
 def reply_suggested_list(date: str = "today", limit: int = 50) -> Dict[str, Any]:
@@ -206,7 +467,7 @@ def reply_suggested_list(date: str = "today", limit: int = 50) -> Dict[str, Any]
     db = DB(Settings.load().db_path)
     db.init()
     rows = db.list_reply_queue_by_message_date(day, status="pending", limit=limit)
-    return {"ok": True, "day": day, "count": len(rows), "items": _indexed(rows)}
+    return {"ok": True, "day": day, "count": len(rows), "items": _indexed(rows, db)}
 
 
 def reply_center(date: str = "today") -> Dict[str, Any]:
@@ -218,12 +479,14 @@ def reply_center(date: str = "today") -> Dict[str, Any]:
             "menu": {
                 "1": "show sent list",
                 "2": "show suggested-not-replied list",
-                "3": "prepare reply for suggested index",
+                "3": "prepare reply for suggested item (id preferred)",
             },
             "next_steps": [
                 f"mailhub reply sent-list --date {day}",
                 f"mailhub reply suggested-list --date {day}",
+                "mailhub reply prepare --id <ID>",
                 "mailhub reply prepare --index <N>",
+                "mailhub send --id <ID> --confirm",
             ],
         }
 
@@ -232,7 +495,7 @@ def reply_center(date: str = "today") -> Dict[str, Any]:
     print(f"Date: {day}")
     print("1) Sent list")
     print("2) Suggested not replied list")
-    print("3) Prepare reply for suggested index")
+    print("3) Prepare reply for suggested item (id preferred)")
     choice = input("Select [1]: ").strip() or "1"
     if choice == "1":
         return reply_sent_list(date=day)
@@ -242,8 +505,11 @@ def reply_center(date: str = "today") -> Dict[str, Any]:
         suggested = reply_suggested_list(date=day).get("items", [])
         if not suggested:
             return {"ok": False, "message": "No suggested-not-replied items for selected day."}
+        rid = input("Reply id to prepare (press Enter to use index): ").strip()
+        if rid:
+            return reply_prepare(reply_id=int(rid))
         idx = input("Suggested index to prepare [1]: ").strip() or "1"
-        return reply_prepare(int(idx))
+        return reply_prepare(index=int(idx))
     return {"ok": True, "message": "No action"}
 
 
@@ -262,18 +528,30 @@ def _extract_reply_to(from_header: str) -> str:
     return addr or from_header
 
 
-def _indexed(items: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+def _indexed(items: list[Dict[str, Any]], db: DB) -> list[Dict[str, Any]]:
     out: list[Dict[str, Any]] = []
     for i, x in enumerate(items, start=1):
+        item_id = int(x.get("id") or 0)
+        title = x.get("subject") or ""
+        sender_address = (
+            _choose_sender_for_message(db, x.get("provider_id") or "") or {}
+        ).get("email") or ""
         out.append(
             {
                 "index": i,
+                "id": item_id,
                 "queue_id": x.get("id"),
                 "message_id": x.get("message_id"),
+                "title": title,
                 "from": x.get("from_addr") or "",
-                "subject": x.get("subject") or "",
+                "from_address": x.get("from_addr") or "",
+                "sender_address": sender_address,
+                "subject": title,
                 "status": x.get("status") or "",
                 "send_mode": x.get("send_mode") or "",
+                "display": f"index {i}. (Id: {item_id}) {title}",
+                "prepare_cmd": f"mailhub reply prepare --id {item_id}",
+                "send_cmd": f"mailhub send --id {item_id} --confirm",
             }
         )
     return out

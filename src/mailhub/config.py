@@ -50,7 +50,8 @@ class RoutingConfig:
     # standalone: reasoning via local agent bridge command + prompts
     mode: str = "openclaw"  # openclaw|standalone
     openclaw_json_path: str = "~/.openclaw/openclaw.json"
-    standalone_agent_cmd: str = ""
+    standalone_agent_enabled: bool = True
+    standalone_models_path: str = ""
 
 
 @dataclass
@@ -115,6 +116,7 @@ class Settings:
 
     def ensure_dirs(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
+        self._ensure_standalone_models_files()
 
     def save(self) -> None:
         self.ensure_dirs()
@@ -153,13 +155,43 @@ class Settings:
             or "~/.openclaw/openclaw.json"
         ).strip()
 
-    def effective_standalone_agent_cmd(self) -> str:
+    def effective_standalone_agent_enabled(self) -> bool:
+        raw = os.environ.get("MAILHUB_STANDALONE_AGENT_ENABLED", "")
+        if raw.strip():
+            return raw.strip().lower() in ("1", "true", "yes", "on")
+        return bool(self.routing.standalone_agent_enabled)
+
+    def effective_standalone_models_path(self) -> str:
+        configured = (self.routing.standalone_models_path or "").strip()
+        default_path = str(self.state_dir / "standalone.models.json")
         return (
-            os.environ.get("MAILHUB_STANDALONE_AGENT_CMD")
-            or self.routing.standalone_agent_cmd
-            or os.environ.get("MAILHUB_OPENCLAW_AGENT_CMD")
-            or ""
+            os.environ.get("MAILHUB_STANDALONE_MODELS_PATH")
+            or configured
+            or default_path
         ).strip()
+
+    def effective_standalone_models_template_path(self) -> str:
+        # Template is intentionally fixed at skill root for discoverability/editability.
+        skill_dir = (os.environ.get("MAILHUB_SKILL_DIR") or "").strip()
+        if skill_dir:
+            return str(Path(os.path.expandvars(skill_dir)).expanduser() / "standalone.models.template.json")
+        return str(Path(__file__).resolve().parents[2] / "standalone.models.template.json")
+
+    def load_standalone_models(self) -> Dict[str, Any]:
+        p = Path(os.path.expandvars(self.effective_standalone_models_path())).expanduser()
+        if not p.exists():
+            return {}
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _ensure_standalone_models_files(self) -> None:
+        p = Path(os.path.expandvars(self.effective_standalone_models_path())).expanduser()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if not p.exists():
+            p.write_text("{}", encoding="utf-8")
 
     def _dotenv_value(self, key: str) -> str:
         # Priority: explicit env file -> cwd .env -> skill dir .env (if launcher exports) -> ""
@@ -214,6 +246,21 @@ class Settings:
             or self._dotenv_value("MS_OAUTH_CLIENT_ID")
             or ""
         ).strip()
+
+    def skill_root(self) -> Path:
+        """
+        Resolve MailHub skill root directory.
+        Priority:
+        1) MAILHUB_SKILL_DIR (set by launcher/setup)
+        2) Source-relative fallback
+        """
+        skill_dir = (os.environ.get("MAILHUB_SKILL_DIR") or "").strip()
+        if skill_dir:
+            return Path(os.path.expandvars(skill_dir)).expanduser()
+        return Path(__file__).resolve().parents[2]
+
+    def resolve_skill_path(self, relative_path: str) -> Path:
+        return self.skill_root() / relative_path
 
 
 def _filter_dataclass_kwargs(dc: type[Any], data: Dict[str, Any]) -> Dict[str, Any]:

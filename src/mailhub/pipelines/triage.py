@@ -16,7 +16,14 @@ from ..utils.html import html_to_text
 
 
 def _load_yaml(path: Path) -> Dict[str, Any]:
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not path.exists():
+        raise FileNotFoundError(f"Rules file not found: {path}")
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Invalid YAML root (expected mapping): {path}")
+    return data
 
 
 def _header_map(headers: List[Dict[str, str]]) -> Dict[str, str]:
@@ -272,8 +279,8 @@ def triage_day(date: str = "today") -> Dict[str, Any]:
 
     day = today_yyyy_mm_dd_utc() if date == "today" else date
 
-    tags_rules = _load_yaml(Path("config/rules.email_tags.yml"))
-    reply_rules = _load_yaml(Path("config/rules.reply_needed.yml"))
+    tags_rules = _load_yaml(s.resolve_skill_path("config/rules.email_tags.yml"))
+    reply_rules = _load_yaml(s.resolve_skill_path("config/rules.reply_needed.yml"))
 
     messages = db.get_messages_by_date(day)
 

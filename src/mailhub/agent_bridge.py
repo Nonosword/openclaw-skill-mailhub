@@ -9,16 +9,18 @@ from typing import Any, Dict, List, Optional
 
 from .config import Settings
 
+
 def agent_enabled() -> bool:
     s = Settings.load()
     mode = s.effective_mode()
     if mode != "standalone":
         return False
-    return os.environ.get("MAILHUB_USE_OPENCLAW_AGENT", "1").strip().lower() in ("1", "true", "yes", "on")
+    return s.effective_standalone_agent_enabled()
 
 
 def _prompt_text(name: str) -> str:
-    p = Path("config/prompts") / name
+    s = Settings.load()
+    p = s.resolve_skill_path(f"config/prompts/{name}")
     if not p.exists():
         return ""
     try:
@@ -53,14 +55,46 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _build_cmd_from_models(models: Dict[str, Any], *, openclaw_json_path: str) -> List[str]:
+    runner = models.get("runner") if isinstance(models, dict) else {}
+    runner = runner if isinstance(runner, dict) else {}
+    command = str(runner.get("command") or "").strip()
+    args_raw = runner.get("args", [])
+    args: List[str] = []
+    if isinstance(args_raw, list):
+        args = [str(x) for x in args_raw]
+    elif isinstance(args_raw, str):
+        args = shlex.split(args_raw)
+
+    agent = models.get("agent") if isinstance(models, dict) else {}
+    agent = agent if isinstance(agent, dict) else {}
+    defaults = models.get("defaults") if isinstance(models, dict) else {}
+    defaults = defaults if isinstance(defaults, dict) else {}
+    agent_id = str(agent.get("id") or defaults.get("primary_model") or "").strip()
+
+    if not command:
+        return []
+    values = {
+        "agent_id": agent_id,
+        "openclaw_json_path": openclaw_json_path,
+    }
+
+    head = shlex.split(command.format(**values))
+    out = list(head)
+    out.extend([a.format(**values) for a in args])
+    return [x for x in out if x.strip()]
+
+
 def run_agent(task: str, payload: Dict[str, Any], prompt_file: str) -> Optional[Dict[str, Any]]:
     if not agent_enabled():
         return None
 
     s = Settings.load()
-    cmd = s.effective_standalone_agent_cmd()
-    if not cmd:
-        # Keep explicit and safe: no implicit shell invocation.
+    s.ensure_dirs()
+    models = s.load_standalone_models()
+    cmd_argv = _build_cmd_from_models(models, openclaw_json_path=s.effective_openclaw_json_path())
+    if not cmd_argv:
+        # No runner configured in models file.
         return None
 
     req = {
@@ -69,11 +103,13 @@ def run_agent(task: str, payload: Dict[str, Any], prompt_file: str) -> Optional[
         "prompt": _prompt_text(prompt_file),
         "input": payload,
         "openclaw_json_path": s.effective_openclaw_json_path(),
+        "standalone_models_path": s.effective_standalone_models_path(),
+        "models": models,
     }
 
     try:
         cp = subprocess.run(
-            shlex.split(cmd),
+            cmd_argv,
             input=json.dumps(req, ensure_ascii=False),
             text=True,
             capture_output=True,

@@ -270,7 +270,7 @@ class DB:
             existing = con.execute(
                 """
                 SELECT id FROM reply_queue
-                WHERE message_id=? AND status IN ('pending', 'sent')
+                WHERE message_id=? AND status='pending'
                 ORDER BY id DESC
                 LIMIT 1
                 """,
@@ -295,7 +295,7 @@ class DB:
         try:
             rows = con.execute(
                 """
-                SELECT rq.*, m.subject, m.from_addr, m.date_utc
+                SELECT rq.*, m.subject, m.from_addr, m.date_utc, m.provider_id
                 FROM reply_queue rq
                 JOIN messages m ON m.id=rq.message_id
                 WHERE rq.status=?
@@ -305,6 +305,23 @@ class DB:
                 (status, limit),
             ).fetchall()
             return [dict(r) for r in rows]
+        finally:
+            con.close()
+
+    def get_reply_queue_item(self, rq_id: int) -> Optional[Dict[str, Any]]:
+        con = self.connect()
+        try:
+            row = con.execute(
+                """
+                SELECT rq.*, m.subject, m.from_addr, m.date_utc, m.provider_id
+                FROM reply_queue rq
+                JOIN messages m ON m.id=rq.message_id
+                WHERE rq.id=?
+                LIMIT 1
+                """,
+                (rq_id,),
+            ).fetchone()
+            return dict(row) if row else None
         finally:
             con.close()
 

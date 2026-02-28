@@ -70,6 +70,32 @@ def inbox_ingest_day(date: str = "today") -> Dict[str, Any]:
     return out
 
 
+def inbox_read(message_id: str, include_raw: bool = False) -> Dict[str, Any]:
+    s = Settings.load()
+    db = DB(s.db_path)
+    db.init()
+    msg = db.get_message(message_id)
+    if not msg:
+        return {"ok": False, "reason": "message_not_found", "message_id": message_id}
+
+    payload: Dict[str, Any] = {
+        "id": msg.get("id"),
+        "provider_id": msg.get("provider_id"),
+        "thread_id": msg.get("thread_id"),
+        "from_addr": msg.get("from_addr") or "",
+        "to_addrs": msg.get("to_addrs") or "",
+        "subject": msg.get("subject") or "",
+        "date_utc": msg.get("date_utc") or "",
+        "snippet": msg.get("snippet") or "",
+        "body_text": msg.get("body_text") or "",
+        "body_html": msg.get("body_html") or "",
+        "has_attachments": bool(msg.get("has_attachments")),
+    }
+    if include_raw:
+        payload["raw_json"] = msg.get("raw_json") or ""
+    return {"ok": True, "message": payload}
+
+
 def _gmail_subject(raw: Dict[str, Any]) -> str:
     headers = {h["name"].lower(): h["value"] for h in raw.get("payload", {}).get("headers", []) if "name" in h and "value" in h}
     return headers.get("subject", "")

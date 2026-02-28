@@ -1,0 +1,23 @@
+{
+  "runner": {
+    "command": "",
+    "args": [
+      "agent",
+      "run",
+      "--stdio",
+      "--agent-id",
+      "{agent_id}",
+      "--config",
+      "{openclaw_json_path}"
+    ]
+  },
+  "agent": {
+    "id": ""
+  },
+  "providers": {},
+  "defaults": {
+    "primary_model": "",
+    "image_model": ""
+  },
+  "notes": "Edit this file to control standalone model routing and runner command."
+}

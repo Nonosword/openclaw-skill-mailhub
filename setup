@@ -2,15 +2,15 @@
 set -euo pipefail
 
 # Usage:
-#   ./setup --dir <SKILL_DIR> [--source env] [--mode openclaw|standalone] [--openclaw-json <path>]
+#   ./setup --dir <SKILL_DIR> [--source env] [--mode openclaw|standalone] [--openclaw-json <path>] [--standalone-models <path>]
 #   ./setup [SKILL_DIR]
 # Example:
-#   ~/.openclaw/skills/mailhub/setup --dir ~/.openclaw/skills/mailhub --source env --mode standalone --openclaw-json ~/.openclaw/openclaw.json
+#   ~/.openclaw/skills/mailhub/setup --dir ~/.openclaw/skills/mailhub --source env --mode standalone --openclaw-json ~/.openclaw/openclaw.json --standalone-models ~/.openclaw/state/mailhub/standalone.models.json
 
 usage() {
   cat <<'EOF'
 Usage:
-  setup --dir <SKILL_DIR> [--source env] [--mode openclaw|standalone] [--openclaw-json <path>]
+  setup --dir <SKILL_DIR> [--source env] [--mode openclaw|standalone] [--openclaw-json <path>] [--standalone-models <path>]
   setup [SKILL_DIR]
 
 Options:
@@ -18,6 +18,8 @@ Options:
   --source env     Load <SKILL_DIR>/.env during setup and in launcher runtime.
   --mode <value>   Routing mode: openclaw (default) or standalone.
   --openclaw-json  Path to openclaw.json (default: ~/.openclaw/openclaw.json).
+  --standalone-models Path to standalone models JSON (default: ~/.openclaw/state/mailhub/standalone.models.json).
+  --wizard         Interactive setup prompts for routing mode/path.
   -h, --help       Show this help.
 EOF
 }
@@ -26,6 +28,9 @@ SKILL_DIR=""
 SOURCE_MODE="none"
 MODE="openclaw"
 OPENCLAW_JSON="${HOME}/.openclaw/openclaw.json"
+STANDALONE_MODELS="${HOME}/.openclaw/state/mailhub/standalone.models.json"
+WIZARD=0
+EXPLICIT_ROUTING=0
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -42,12 +47,24 @@ while [[ $# -gt 0 ]]; do
     --mode)
       [[ $# -ge 2 ]] || { echo "[setup] --mode requires a value" >&2; exit 2; }
       MODE="$2"
+      EXPLICIT_ROUTING=1
       shift 2
       ;;
     --openclaw-json)
       [[ $# -ge 2 ]] || { echo "[setup] --openclaw-json requires a path" >&2; exit 2; }
       OPENCLAW_JSON="$2"
+      EXPLICIT_ROUTING=1
       shift 2
+      ;;
+    --standalone-models)
+      [[ $# -ge 2 ]] || { echo "[setup] --standalone-models requires a path" >&2; exit 2; }
+      STANDALONE_MODELS="$2"
+      EXPLICIT_ROUTING=1
+      shift 2
+      ;;
+    --wizard)
+      WIZARD=1
+      shift
       ;;
     -h|--help)
       usage
@@ -70,6 +87,36 @@ if [[ -z "${SKILL_DIR}" ]]; then
     SKILL_DIR="${POSITIONAL[0]}"
   else
     SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  fi
+fi
+
+# Auto enter interactive mode when no explicit routing flags were provided and TTY is available.
+if [[ "${WIZARD}" -eq 0 && -t 0 ]]; then
+  # If only "setup" style invocation, prompt like wizard.
+  if [[ ${#POSITIONAL[@]} -le 1 && ${EXPLICIT_ROUTING} -eq 0 ]]; then
+    WIZARD=1
+  fi
+fi
+
+if [[ "${WIZARD}" -eq 1 && -t 0 ]]; then
+  echo ""
+  echo "[setup] interactive routing setup"
+  read -r -p "Routing mode [${MODE}] (openclaw|standalone): " MODE_INPUT
+  MODE_INPUT="$(echo "${MODE_INPUT:-}" | tr '[:upper:]' '[:lower:]' | xargs)"
+  if [[ -n "${MODE_INPUT}" ]]; then
+    MODE="${MODE_INPUT}"
+  fi
+  read -r -p "OpenClaw json path [${OPENCLAW_JSON}]: " OCJ_INPUT
+  OCJ_INPUT="$(echo "${OCJ_INPUT:-}" | xargs)"
+  if [[ -n "${OCJ_INPUT}" ]]; then
+    OPENCLAW_JSON="${OCJ_INPUT}"
+  fi
+  if [[ "${MODE}" == "standalone" ]]; then
+    read -r -p "Standalone models path [${STANDALONE_MODELS}]: " SM_INPUT
+    SM_INPUT="$(echo "${SM_INPUT:-}" | xargs)"
+    if [[ -n "${SM_INPUT}" ]]; then
+      STANDALONE_MODELS="${SM_INPUT}"
+    fi
   fi
 fi
 
@@ -135,6 +182,7 @@ export MAILHUB_SKILL_DIR="${SKILL_DIR}"
 export MAILHUB_ENV_FILE="\${MAILHUB_ENV_FILE:-${SKILL_DIR}/.env}"
 export MAILHUB_MODE="\${MAILHUB_MODE:-${MODE}}"
 export MAILHUB_OPENCLAW_JSON_PATH="\${MAILHUB_OPENCLAW_JSON_PATH:-${OPENCLAW_JSON}}"
+export MAILHUB_STANDALONE_MODELS_PATH="\${MAILHUB_STANDALONE_MODELS_PATH:-${STANDALONE_MODELS}}"
 if [[ "${SOURCE_MODE}" == "env" ]]; then
   ENV_FILE="${SKILL_DIR}/.env"
   if [[ -f "\${ENV_FILE}" ]]; then
@@ -162,9 +210,29 @@ echo "[setup] running doctor..."
 echo "[setup] configuring routing mode=${MODE}"
 "${LAUNCHER}" settings-set routing.mode "${MODE}"
 "${LAUNCHER}" settings-set routing.openclaw_json_path "${OPENCLAW_JSON}"
+"${LAUNCHER}" settings-set routing.standalone_models_path "${STANDALONE_MODELS}"
+if [[ "${MODE}" == "standalone" ]]; then
+  "${LAUNCHER}" settings-set routing.standalone_agent_enabled true
+fi
+
+# Ensure standalone models json exists and is editable.
+STANDALONE_MODELS_EXPANDED="$("${VENV_DIR}/bin/python" -c 'import os, pathlib, sys; p=pathlib.Path(os.path.expandvars(sys.argv[1])).expanduser(); print(str(p))' "${STANDALONE_MODELS}")"
+STANDALONE_TEMPLATE_ROOT="${SKILL_DIR}/standalone.models.template.json"
+mkdir -p "$(dirname "${STANDALONE_MODELS_EXPANDED}")"
+if [[ ! -f "${STANDALONE_MODELS_EXPANDED}" ]]; then
+  echo "{}" > "${STANDALONE_MODELS_EXPANDED}"
+fi
+
 if [[ "${MODE}" == "standalone" ]]; then
   echo "[setup] standalone mode selected."
-  echo "[setup] set standalone agent command with:"
-  echo "  mailhub settings-set routing.standalone_agent_cmd '<your-agent-command>'"
+  echo "[setup] standalone models file: ${STANDALONE_MODELS_EXPANDED}"
+  echo "[setup] standalone models template (repo root): ${STANDALONE_TEMPLATE_ROOT}"
+  if [[ ! -f "${STANDALONE_TEMPLATE_ROOT}" ]]; then
+    echo "[setup] warning: template not found at ${STANDALONE_TEMPLATE_ROOT}"
+  fi
+  echo "[setup] configure runner + agent in standalone models JSON:"
+  echo "  - runner.command"
+  echo "  - runner.args"
+  echo "  - agent.id"
 fi
 echo "[setup] done."

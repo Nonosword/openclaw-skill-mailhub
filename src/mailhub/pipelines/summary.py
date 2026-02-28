@@ -43,15 +43,22 @@ def daily_summary(date: str = "today", include_lists: bool = True) -> Dict[str, 
 def _to_simple_list(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for i, x in enumerate(items, start=1):
+        item_id = int(x.get("id") or 0)
+        title = x.get("subject") or ""
         out.append(
             {
                 "index": i,
+                "id": item_id,
                 "queue_id": x.get("id"),
                 "message_id": x.get("message_id"),
+                "title": title,
                 "from": x.get("from_addr") or "",
-                "subject": x.get("subject") or "",
+                "subject": title,
                 "status": x.get("status") or "",
                 "send_mode": x.get("send_mode") or "",
+                "display": f"index {i}. (Id: {item_id}) {title}",
+                "prepare_cmd": f"mailhub reply prepare --id {item_id}",
+                "send_cmd": f"mailhub send --id {item_id} --confirm",
             }
         )
     return out
