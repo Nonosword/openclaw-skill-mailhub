@@ -24,7 +24,9 @@ metadata:
 # MailHub Skill Contract (OpenClaw Mode)
 
 ## Purpose
-- Use exactly one automation entrypoint: `mailhub jobs run`.
+- Use exactly one automation entrypoint: `mailhub mail run`.
+- OpenClaw bridge route: `mailhub openclaw --section <bind|mail|calendar|summary>`.
+- Canonical command surface: `mailhub mail`, `mailhub calendar`, `mailhub summary`, `mailhub openclaw`.
 - Convert MailHub JSON outputs into user-readable updates.
 - Persist analysis records back into MailHub state for follow-up commands.
 
@@ -39,26 +41,12 @@ metadata:
 When user asks "what else can MailHub do" or command is unclear:
 1. Run `mailhub --help`.
 2. Run targeted help, e.g.:
-   - `mailhub jobs --help`
    - `mailhub bind --help`
-   - `mailhub reply --help`
+   - `mailhub mail --help`
+   - `mailhub calendar --help`
+   - `mailhub summary --help`
+   - `mailhub openclaw --help`
 3. Answer using actual command/parameter names from help output.
-
-## Runtime Mode Contract
-MailHub supports two runtime modes configured in settings.
-
-- `openclaw` mode:
-  - OpenClaw reads `mailhub jobs run` output.
-  - OpenClaw summarizes and decides next actions.
-  - OpenClaw writes back `mailhub analysis record ...` for each analyzed email.
-- `standalone` mode:
-  - MailHub internal agent bridge runs prompt-based reasoning via `standalone.models.json`.
-
-Mode visibility requirement:
-- For mode-aware JSON outputs, read and report `runtime.mode`.
-- If `runtime.mode=standalone`, also read/report:
-  - `runtime.standalone.agent_id`
-  - `runtime.standalone.production_model`
 
 ## Reply Targeting Contract (ID-FIRST, MUST)
 - Reply list rendering must include this display format per item:
@@ -66,33 +54,31 @@ Mode visibility requirement:
 - `Id` is the stable reply queue id for operations.
 - OpenClaw must use `--id` for execution.
 - If user says "reply first one", map `index -> Id` from latest list, then execute:
-  - `mailhub reply prepare --id 2352`
+  - `mailhub mail reply prepare --id 2352`
 - If user says "reply <title>", resolve title to the corresponding `Id` first, then execute by `--id`.
 - If title matches multiple items, ask user to choose the target `Id`; do not guess.
 - Do not execute `reply prepare/send` by index directly when `Id` is available.
 
 ## Reply Conversation Flow (OpenClaw + CLI)
 When user asks to reply to a specific email:
-1. Read full email first via `mailhub inbox read --id <mailhub_message_id>`.
+1. Read full email first via `mailhub mail inbox read --id <mailhub_message_id>`.
 2. Offer three compose choices:
    - A) auto-create draft from full content
    - B) user inputs content, then optimize
    - C) user inputs content, no optimization
 3. Use:
-   - `mailhub reply compose --message-id <mailhub_message_id> --mode auto`
-   - `mailhub reply compose --message-id <mailhub_message_id> --mode optimize --content "<text>"`
-   - `mailhub reply compose --message-id <mailhub_message_id> --mode raw --content "<text>"`
+   - `mailhub mail reply compose --message-id <mailhub_message_id> --mode auto`
+   - `mailhub mail reply compose --message-id <mailhub_message_id> --mode optimize --content "<text>"`
+   - `mailhub mail reply compose --message-id <mailhub_message_id> --mode raw --content "<text>"`
 4. After draft output, keep review loop until user confirms:
    - A) confirm
-   - B) optimize again -> `mailhub reply revise --id <Id> --mode optimize --content "<text>"`
-   - C) manual modify -> `mailhub reply revise --id <Id> --mode raw --content "<text>"`
+   - B) optimize again -> `mailhub mail reply revise --id <Id> --mode optimize --content "<text>"`
+   - C) manual modify -> `mailhub mail reply revise --id <Id> --mode raw --content "<text>"`
 5. Once confirmed, show pending send queue with required fields:
    - `id`, `new_title`, `source_title`, `from_address`, `sender_address`
    - queue only includes draft-ready items; unfinished drafts are `not_ready_ids`
 6. Sending:
-   - openclaw mode single: `mailhub send --id <Id> --confirm --message '{"Subject":"<subject>","to":"<to>","from":"<from>","context":"<context>"}'`
-   - standalone mode single: `mailhub send --id <Id> --confirm --bypass-message`
-   - all pending (standalone): `mailhub send --list --confirm --bypass-message`
+   - `mailhub send --id <Id> --confirm --message '{"Subject":"<subject>","to":"<to>","from":"<from>","context":"<context>"}'`
 
 Openclaw send payload contract (strict):
 - `--message` must be a JSON object.
@@ -101,12 +87,12 @@ Openclaw send payload contract (strict):
 - MailHub overwrites existing pending draft before send.
 - MailHub appends `\n\n\n<this reply is auto genertated by Mailhub skill>` to `context`.
 - `subject` / `to` / `from` may fallback from existing message/provider context when omitted.
-- No `--message` means send is blocked, unless `--bypass-message` is set in standalone mode.
+- No `--message` means send is blocked.
 
 ## Required Runtime State Machine
 When user asks to run mailbox workflow:
 
-1. Run `mailhub jobs run`.
+1. Run `mailhub mail run`.
 2. If output is `ok=true`:
    - Parse `steps.poll`, `steps.triage_today.analyzed_items[]`, and `steps.daily_summary`.
    - Return concise user-readable summary.
@@ -114,26 +100,23 @@ When user asks to run mailbox workflow:
 3. If output has `reason=config_not_reviewed`:
    - Run `mailhub config`.
    - Show checklist/defaults.
-   - Ask user whether to keep defaults or edit.
+   - If user wants changes, use `mailhub settings-set <key> <value>`.
    - Only then run `mailhub config --confirm`.
-   - Re-run `mailhub jobs run`.
+   - Re-run `mailhub mail run`.
 4. If output has `reason=config_not_confirmed`:
    - Show checklist/defaults.
    - Request explicit confirmation.
    - Run `mailhub config --confirm`.
-   - Re-run `mailhub jobs run`.
+   - Re-run `mailhub mail run`.
 5. If output has `reason=no_provider_bound`:
    - Start binding via `mailhub bind`.
    - If non-TTY path is required, keep the numbered bind UX and execute `mailhub bind --provider ...` internally.
-   - Re-run `mailhub jobs run` after successful bind.
+   - Re-run `mailhub mail run` after successful bind.
 
 Do not skip analysis write-back when `ok=true`.
 
-## Jobs Output Fields OpenClaw Must Use
-`mailhub jobs run` returns:
-- `runtime.mode`
-- `runtime.standalone.agent_id` (standalone only)
-- `runtime.standalone.production_model` (standalone only)
+## Workflow Output Fields OpenClaw Must Use
+`mailhub mail run` returns:
 - `steps.poll`
 - `steps.triage_today.analyzed_items[]`
 - `steps.daily_summary`
@@ -171,11 +154,6 @@ Parameters:
 Description: Mark config reviewed and print checklist/defaults.
 Parameters:
 - `--confirm`: confirm first-run config.
-- `--wizard`: run interactive wizard first.
-
-### `mailhub wizard`
-Description: Interactive settings wizard.
-Parameters: none.
 
 ### `mailhub bind`
 Description: Unified bind/account-management entry.
@@ -196,46 +174,65 @@ Parameters:
 - `--email <addr>` `--imap-host <host>` `--smtp-host <host>`
 - `--username <name>` `--host <host>`
 
-### `mailhub jobs run`
-Description: Unified automation command (poll + triage + summary + optional alerts/auto-reply/scheduled digest/billing).
+### `mailhub mail run`
+Description: Unified mail workflow alias (equivalent mail taskflow).
 Parameters:
-- `--since <window>`: override polling window (examples: `15m`, `2h`, `1d`).
+- `--since <window>` optional
 - `--confirm-config`: confirm first-run config and continue.
-- `--config`: open wizard before running.
-- `--bind-if-needed/--no-bind-if-needed`: auto-open bind menu when no account is bound.
+- `--bind-if-needed/--no-bind-if-needed`
 
-### `mailhub daily-summary`
-Description: DB-based daily summary (counts + replied/pending lists).
+### `mailhub calendar --event`
+Description: Unified calendar event interface (preferred form).
 Parameters:
-- `date` (default `today`).
-
-### `mailhub cal agenda`
-Description: Quick calendar read for next N days.
-Parameters:
-- `--days <N>` (default `3`)
-
-### `mailhub cal event`
-Description: Unified calendar event API for view/add/delete/sync/remind/summary.
-Parameters:
-- `--event <view|add|delete|sync|summary|remind>` (required)
+- `--event <view|add|delete|sync|summary|remind>`
 - `--datetime <ISO8601>` optional
 - `--datetime-range <start/end|json|keyword>` optional
-- `--title <text>` for `add`
-- `--location <text>` for `add`
-- `--context <text>` for `add`
-- `--provider-id <id>` optional
-- `--event-id <provider_event_id>` required for `delete`
-- `--duration-minutes <N>` default `30` for `add` with only `--datetime`
-- keywords for `--datetime-range`: `today|tomorrow|past_week|this_week|this_week_remaining|next_week`
+- `--title`, `--location`, `--context`, `--provider-id`, `--event-id`, `--duration-minutes`
 
-### `mailhub inbox read`
+### `mailhub calendar agenda`
+Description: Agenda view helper.
+Parameters:
+- `--days <N>`
+
+### `mailhub summary`
+Description: Unified summary interface.
+Parameters:
+- `--mail` include mail summary
+- `--calendar` include calendar summary
+- `--datetime-range <keyword|start/end>` optional
+Notes:
+- mail summary is aggregated by UTC datetime window (not only per-day totals).
+
+### `mailhub openclaw`
+Description: OpenClaw bridge endpoint.
+Parameters:
+- `--section <bind|mail|calendar|summary>`
+- `--since <window>` for mail section
+- `--datetime-range <...>` for calendar/summary
+- `--mail` / `--calendar` for summary section
+Notes:
+- if `--section` is omitted in TTY, show numbered selector: `1 bind / 2 mail / 3 calendar / 4 summary`.
+- output shape is normalized with `human_summary` + `output`.
+
+### `mailhub mail inbox poll`
+Description: Run incremental mail polling now.
+Parameters:
+- `--since <window>`
+- `--mode <alerts|jobs|ingest|bootstrap>`
+
+### `mailhub mail inbox ingest`
+Description: Ingest wrapper for day-oriented mail pull.
+Parameters:
+- `--date <today|YYYY-MM-DD>`
+
+### `mailhub mail inbox read`
 Description: Read one message full content from local DB.
 Parameters:
 - `--id <mailhub_message_id>` (required)
 - `--raw` include raw provider JSON.
 
 ### `mailhub analysis record`
-Description: Persist OpenClaw/standalone analysis back to DB.
+Description: Persist OpenClaw analysis back to DB.
 Parameters:
 - `--message-id <mailhub_id>` (required)
 - `--title <text>`
@@ -243,7 +240,7 @@ Parameters:
 - `--tag <label>`
 - `--suggest-reply/--no-suggest-reply`
 - `--suggestion <text>`
-- `--source <openclaw|standalone|...>`
+- `--source <openclaw|...>`
 
 ### `mailhub analysis list`
 Description: List analysis records for date window.
@@ -251,13 +248,13 @@ Parameters:
 - `date` (default `today`)
 - `limit` (default `200`)
 
-### `mailhub reply prepare`
+### `mailhub mail reply prepare`
 Description: Build a draft for a pending reply target (ID-first).
 Parameters:
 - `--id <ID>` (preferred, stable reply queue id from list output)
 - `--index <N>` (position in pending list, 1-based).
 
-### `mailhub reply compose`
+### `mailhub mail reply compose`
 Description: Create draft directly from a message id (without needing reply-needed queue first).
 Parameters:
 - `--message-id <mailhub_message_id>` (required)
@@ -265,21 +262,20 @@ Parameters:
 - `--content <text>` optional input for optimize/raw modes
 - `--review/--no-review` interactive a/b/c loop in TTY
 
-### `mailhub reply revise`
+### `mailhub mail reply revise`
 Description: Revise existing pending draft by Id.
 Parameters:
 - `--id <Id>` (required)
 - `--mode <optimize|raw>`
 - `--content <text>`
 
-### `mailhub reply send`
+### `mailhub mail reply send`
 Description: Send prepared draft for a pending reply target (ID-first).
 Parameters:
 - `--id <ID>` (preferred, stable reply queue id from list output)
 - `--index <N>` (fallback only)
 - `--confirm-text <text>` must include the word `send`.
 - `--message <json>` for manual send payload (`context` required).
-- `--bypass-message` only allowed in standalone mode.
 
 ### `mailhub send`
 Description: Send command for pending send queue.
@@ -288,27 +284,26 @@ Parameters:
 - `--list` list pending queue, or with `--confirm` send all pending
 - `--confirm` required for send actions
 - `--message <json>` required by default for manual single-send; schema `{"Subject":"...","to":"...","from":"...","context":"..."}`
-- `--bypass-message` only allowed in standalone mode (single/list send)
 
-### `mailhub reply auto`
+### `mailhub mail reply auto`
 Description: Auto-draft (and optionally send) for pending queue based on settings.
 Parameters:
 - `--since <window>`
 - `--dry-run <true|false>`
 
-### `mailhub reply sent-list`
+### `mailhub mail reply sent-list`
 Description: Replied items list for a date.
 Parameters:
 - `--date <today|YYYY-MM-DD>`
 - `--limit <N>`
 
-### `mailhub reply suggested-list`
+### `mailhub mail reply suggested-list`
 Description: Suggested-but-not-replied list for a date.
 Parameters:
 - `--date <today|YYYY-MM-DD>`
 - `--limit <N>`
 
-### `mailhub reply center`
+### `mailhub mail reply center`
 Description: Interactive (TTY) reply center with numbered options.
 Parameters:
 - `--date <today|YYYY-MM-DD>`
@@ -320,32 +315,43 @@ Parameters: none.
 ### `mailhub settings-set`
 Description: Set config key.
 Parameters:
-- `<key>`: supports `toggles.<k>`, `oauth.<k>`, `runtime.<k>`, `routing.<k>`
+- `<key>`: supports `general.*`, `mail.*`, `calendar.*`, `summary.*`, `scheduler.*`, `oauth.*`, `runtime.*`, `routing.*`
 - `<value>`
+- scheduling keys:
+  - `calendar.reminder.enabled`
+  - `calendar.reminder.in_jobs_run`
+  - `calendar.reminder.range`
+  - `calendar.reminder.weekdays`
+  - `calendar.reminder.trigger_times_local`
+  - `summary.enabled`
+  - `summary.in_jobs_run`
+  - `summary.range`
+  - `summary.weekdays`
+  - `summary.trigger_times_local`
 
 ### Provider command groups (advanced/fallback)
 - `mailhub auth ...`: direct auth routes.
-- `mailhub inbox ...`: poll/ingest commands.
+- `mailhub mail inbox ...`: poll/ingest commands.
 - `mailhub triage ...`: triage/suggest commands.
-- `mailhub cal ...`: calendar view/add/delete/sync/remind/summary.
+- `mailhub calendar ...`: calendar view/add/delete/sync/remind/summary.
 - `mailhub billing ...`: billing detect/analyze/month.
 
 ## Intent Mapping (Natural Language -> Command)
 - "check status / health" -> `mailhub doctor` (`--all` for deep details)
-- "start mailbox workflow" -> `mailhub jobs run`
-- "show today's summary" -> `mailhub daily-summary`
-- "show this week remaining schedule" -> `mailhub cal event --event summary --datetime-range "this_week_remaining"`
-- "summarize the past week schedule" -> `mailhub cal event --event summary --datetime-range "past_week"`
-- "remind me tomorrow schedule" -> `mailhub cal event --event remind --datetime-range "tomorrow"`
-- "add a calendar event" -> `mailhub cal event --event add --datetime "<ISO8601>" --title "<title>" --context "<context>"`
-- "delete a calendar event" -> `mailhub cal event --event delete --provider-id "<provider_id>" --event-id "<provider_event_id>"`
-- "show replied list" -> `mailhub reply sent-list --date today`
-- "show suggested not replied" -> `mailhub reply suggested-list --date today`
-- "read full email" -> `mailhub inbox read --id <mailhub_message_id>`
-- "draft reply to this email" -> `mailhub reply compose --message-id <mailhub_message_id> --mode auto`
-- "optimize my own draft" -> `mailhub reply revise --id <Id> --mode optimize --content "<text>"`
-- "send this draft" -> openclaw mode: `mailhub send --id <Id> --confirm --message '{"Subject":"<subject>","to":"<to>","from":"<from>","context":"<context>"}'`
-- "send all pending drafts" -> standalone mode: `mailhub send --list --confirm --bypass-message`
+- "start mailbox workflow" -> `mailhub mail run`
+- "openclaw run mail interface now" -> `mailhub openclaw --section mail`
+- "show today's summary" -> `mailhub summary --mail`
+- "show this week remaining schedule" -> `mailhub calendar --event summary --datetime-range "this_week_remaining"`
+- "summarize the past week schedule" -> `mailhub calendar --event summary --datetime-range "past_week"`
+- "remind me tomorrow schedule" -> `mailhub calendar --event remind --datetime-range "tomorrow"`
+- "add a calendar event" -> `mailhub calendar --event add --datetime "<ISO8601>" --title "<title>" --context "<context>"`
+- "delete a calendar event" -> `mailhub calendar --event delete --provider-id "<provider_id>" --event-id "<provider_event_id>"`
+- "show replied list" -> `mailhub mail reply sent-list --date today`
+- "show suggested not replied" -> `mailhub mail reply suggested-list --date today`
+- "read full email" -> `mailhub mail inbox read --id <mailhub_message_id>`
+- "draft reply to this email" -> `mailhub mail reply compose --message-id <mailhub_message_id> --mode auto`
+- "optimize my own draft" -> `mailhub mail reply revise --id <Id> --mode optimize --content "<text>"`
+- "send this draft" -> `mailhub send --id <Id> --confirm --message '{"Subject":"<subject>","to":"<to>","from":"<from>","context":"<context>"}'`
 - "record analysis" -> `mailhub analysis record ...`
 - "show available commands" -> `mailhub --help`
 

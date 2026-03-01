@@ -1,0 +1,76 @@
+{
+  "general": {
+    "agent_display_name": "MailHub",
+    "disclosure_line": "<This reply is auto-genertated by Mailhub skill>"
+  },
+  "mail": {
+    "alerts_mode": "off",
+    "scheduled_analysis": "off",
+    "scheduled_time_local": "09:00",
+    "auto_reply": "off",
+    "auto_reply_send": "off",
+    "poll_since": "15m",
+    "suggest_max_items": 10,
+    "reply_needed_max_items": 20,
+    "fetch": {
+      "default_cold_start_days": 30,
+      "max_results_per_page": 50,
+      "min_results_per_page": 10,
+      "max_pages_per_run": 5,
+      "backoff_retries": 4,
+      "backoff_initial_seconds": 1,
+      "backoff_max_seconds": 16
+    },
+    "billing": {
+      "analysis_mode": "off",
+      "days_of_month": "1",
+      "trigger_times_local": "10:00"
+    }
+  },
+  "calendar": {
+    "management_mode": "off",
+    "days_window": 3,
+    "reminder": {
+      "enabled": false,
+      "in_jobs_run": true,
+      "range": "tomorrow",
+      "weekdays": "mon,tue,wed,thu,fri,sat,sun",
+      "trigger_times_local": "09:00"
+    }
+  },
+  "summary": {
+    "enabled": true,
+    "in_jobs_run": true,
+    "range": "this_week_remaining",
+    "weekdays": "mon,tue,wed,thu,fri",
+    "trigger_times_local": "18:00"
+  },
+  "scheduler": {
+    "tz": "UTC",
+    "digest_weekdays": "mon,tue,wed,thu,fri",
+    "digest_times_local": "09:00",
+    "standalone_loop_interval_seconds": 60
+  },
+  "oauth": {
+    "google_client_id": "",
+    "google_client_secret": "",
+    "ms_client_id": ""
+  },
+  "security": {
+    "dbkey_backend": "local",
+    "dbkey_keychain_account": "default",
+    "dbkey_local_path": "dbkey.enc"
+  },
+  "runtime": {
+    "config_reviewed": false,
+    "config_reviewed_at": "",
+    "config_confirmed": false,
+    "config_confirmed_at": ""
+  },
+  "routing": {
+    "mode": "openclaw",
+    "openclaw_json_path": "~/.openclaw/openclaw.json",
+    "standalone_agent_enabled": true,
+    "standalone_models_path": ""
+  }
+}

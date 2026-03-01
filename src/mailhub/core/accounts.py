@@ -4,7 +4,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from .store import DB
-from .utils.time import utc_now_iso
+from ..shared.time import utc_now_iso
 
 
 def list_accounts(db: DB, hide_email_when_alias: bool = False) -> List[Dict[str, Any]]:

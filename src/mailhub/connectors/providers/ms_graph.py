@@ -7,10 +7,10 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from ..config import Settings
-from ..security import SecretStore
-from ..store import DB
-from ..utils.time import utc_now_iso, parse_since
+from ...core.config import Settings
+from ...core.security import SecretStore
+from ...core.store import DB
+from ...shared.time import utc_now_iso, parse_since
 
 
 AUTH_BASE = "https://login.microsoftonline.com/common/oauth2/v2.0"
@@ -46,8 +46,9 @@ def auth_microsoft(
     is_mail: bool = True,
     is_calendar: bool = True,
     is_contacts: bool = True,
+    mail_cold_start_days: int = 30,
     client_id_override: str = "",
-) -> None:
+) -> str:
     s = Settings.load()
     s.ensure_dirs()
     db = DB(s.db_path)
@@ -101,7 +102,7 @@ def auth_microsoft(
     email = me.json().get("mail") or me.json().get("userPrincipalName") or "me"
     pid = f"microsoft:{email}"
 
-    store = SecretStore(s.secrets_path)
+    store = SecretStore(s.db_path)
     store.set(f"{pid}:access_token", access)
     if refresh:
         store.set(f"{pid}:refresh_token", refresh)
@@ -123,11 +124,13 @@ def auth_microsoft(
                 "is_mail": bool(is_mail),
                 "is_calendar": bool(is_calendar),
                 "is_contacts": bool(is_contacts),
+                "mail_cold_start_days": int(mail_cold_start_days),
                 "status": "configured",
             }
         ),
         created_at=utc_now_iso(),
     )
+    return pid
 
 
 def _refresh_if_needed(pid: str, store: SecretStore) -> str:
@@ -168,40 +171,62 @@ def _refresh_if_needed(pid: str, store: SecretStore) -> str:
     return access_token
 
 
-def graph_list_recent_messages(since: str = "15m", top: int = 25) -> List[Dict[str, Any]]:
+def graph_list_recent_messages(
+    since: str = "15m",
+    top: int = 25,
+    *,
+    provider_id: str = "",
+    after_iso: str = "",
+    page_url: str = "",
+    include_next: bool = False,
+) -> List[Dict[str, Any]] | Dict[str, Any]:
     s = Settings.load()
     db = DB(s.db_path)
     db.init()
     providers = [p for p in db.list_providers() if p["kind"] == "microsoft"]
+    if provider_id.strip():
+        providers = [p for p in providers if p["id"] == provider_id.strip()]
     if not providers:
-        return []
+        return {"items": [], "next_page_url": ""} if include_next else []
 
-    dt = parse_since(since).isoformat()
-    store = SecretStore(s.secrets_path)
+    dt = (after_iso.strip() or parse_since(since).isoformat())
+    store = SecretStore(s.db_path)
     out: List[Dict[str, Any]] = []
+    next_page_url = ""
 
     for p in providers:
         pid = p["id"]
         access = _refresh_if_needed(pid, store)
-        r = requests.get(
-            f"{GRAPH}/me/mailFolders/Inbox/messages",
-            params={
-                "$top": top,
-                "$orderby": "receivedDateTime desc",
-                "$filter": f"receivedDateTime ge {dt}",
-                "$select": "id,subject,from,toRecipients,receivedDateTime,bodyPreview,conversationId",
-            },
-            headers={"Authorization": f"Bearer {access}"},
-            timeout=30,
-        )
+        if page_url.strip():
+            r = requests.get(
+                page_url.strip(),
+                headers={"Authorization": f"Bearer {access}"},
+                timeout=30,
+            )
+        else:
+            r = requests.get(
+                f"{GRAPH}/me/mailFolders/Inbox/messages",
+                params={
+                    "$top": top,
+                    "$orderby": "receivedDateTime desc",
+                    "$filter": f"receivedDateTime ge {dt}",
+                    "$select": "id,subject,from,toRecipients,receivedDateTime,bodyPreview,conversationId",
+                },
+                headers={"Authorization": f"Bearer {access}"},
+                timeout=30,
+            )
         r.raise_for_status()
-        for m in r.json().get("value", []):
+        body = r.json()
+        next_page_url = str(body.get("@odata.nextLink") or "")
+        for m in body.get("value", []):
             out.append({"provider_id": pid, "graph_id": m["id"], "raw": m})
+    if include_next:
+        return {"items": out, "next_page_url": next_page_url}
     return out
 
 
 def graph_get_message(provider_id: str, graph_id: str) -> Dict[str, Any]:
-    store = SecretStore(Settings.load().secrets_path)
+    store = SecretStore(Settings.load().db_path)
     access = _refresh_if_needed(provider_id, store)
     r = requests.get(
         f"{GRAPH}/me/messages/{graph_id}",
@@ -214,7 +239,7 @@ def graph_get_message(provider_id: str, graph_id: str) -> Dict[str, Any]:
 
 
 def graph_send_mail(provider_id: str, to_addr: str, subject: str, body_text: str) -> Dict[str, Any]:
-    store = SecretStore(Settings.load().secrets_path)
+    store = SecretStore(Settings.load().db_path)
     access = _refresh_if_needed(provider_id, store)
 
     payload = {
@@ -236,7 +261,7 @@ def graph_send_mail(provider_id: str, to_addr: str, subject: str, body_text: str
 
 
 def graph_calendar_agenda(provider_id: str, time_min_iso: str, time_max_iso: str, top: int = 50) -> List[Dict[str, Any]]:
-    store = SecretStore(Settings.load().secrets_path)
+    store = SecretStore(Settings.load().db_path)
     access = _refresh_if_needed(provider_id, store)
     r = requests.get(
         f"{GRAPH}/me/calendarView",
@@ -262,7 +287,7 @@ def graph_calendar_create_event(
     location: str = "",
     body_text: str = "",
 ) -> Dict[str, Any]:
-    store = SecretStore(Settings.load().secrets_path)
+    store = SecretStore(Settings.load().db_path)
     access = _refresh_if_needed(provider_id, store)
     # Graph DateTimeTimeZone expects dateTime without timezone suffix when timeZone is provided.
     start_dt = start_utc_iso.replace("Z", "")
@@ -287,7 +312,7 @@ def graph_calendar_create_event(
 
 
 def graph_calendar_delete_event(provider_id: str, event_id: str) -> Dict[str, Any]:
-    store = SecretStore(Settings.load().secrets_path)
+    store = SecretStore(Settings.load().db_path)
     access = _refresh_if_needed(provider_id, store)
     r = requests.delete(
         f"{GRAPH}/me/events/{event_id}",

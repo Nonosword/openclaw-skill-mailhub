@@ -5,15 +5,17 @@ import sys
 from email.message import EmailMessage
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..agent_bridge import draft_reply_with_agent
-from ..config import Settings
-from ..store import DB
-from ..utils.time import utc_now_iso, today_yyyy_mm_dd_utc
-from ..providers.imap_smtp import send_email as imap_send
-from ..providers.google_gmail import gmail_send
-from ..providers.ms_graph import graph_send_mail
+from ..core.agent_bridge import draft_reply_with_agent
+from ..core.config import Settings
+from ..core.logging import get_logger, log_event
+from ..core.store import DB
+from ..shared.time import utc_now_iso, today_yyyy_mm_dd_utc
+from ..connectors.providers.imap_smtp import send_email as imap_send
+from ..connectors.providers.google_gmail import gmail_send
+from ..connectors.providers.ms_graph import graph_send_mail
 
 OPENCLAW_MESSAGE_CONTEXT_SUFFIX = "\n\n\n<this reply is auto genertated by Mailhub skill>"
+logger = get_logger(__name__)
 
 
 def _choose_sender_provider(db: DB) -> Optional[Dict[str, Any]]:
@@ -192,6 +194,13 @@ def reply_prepare(index: int | None = None, reply_id: int | None = None) -> Dict
     hint = "Thanks for your email. "  # MVP default
     subj, body = _draft_reply(msg.get("subject") or "", hint, s.disclosure_text(), incoming=msg)
     db.update_reply_draft(item["id"], subj, body, utc_now_iso())
+    log_event(
+        logger,
+        "reply_prepare_draft_updated",
+        reply_id=int(item["id"]),
+        message_id=str(item["message_id"]),
+        selected_by=("id" if reply_id is not None else "index"),
+    )
 
     to_addr = _extract_reply_to(msg.get("from_addr") or "")
     return {
@@ -200,7 +209,7 @@ def reply_prepare(index: int | None = None, reply_id: int | None = None) -> Dict
         "queue_id": item["id"],
         "message_id": item["message_id"],
         "selected_by": "id" if reply_id is not None else "index",
-        "resolved_command": f"mailhub reply prepare --id {int(item['id'])}",
+        "resolved_command": f"mailhub mail reply prepare --id {int(item['id'])}",
         "preview": {
             "from": (_choose_sender_for_message(db, msg.get("provider_id") or "") or {}).get("email") or "",
             "to": to_addr,
@@ -208,7 +217,7 @@ def reply_prepare(index: int | None = None, reply_id: int | None = None) -> Dict
             "body": body,
         },
         "send_cmd": _send_cmd_for_mode(int(item["id"]), mode),
-        "note": "Confirm before sending: use reply send --id <ID> --confirm-text '<text with send>'.",
+        "note": "Confirm before sending: use mail reply send --id <ID> --confirm-text '<text with send>'.",
     }
 
 
@@ -285,6 +294,18 @@ def reply_send(
     if not body.strip():
         raise RuntimeError("Missing email body content.")
 
+    log_event(
+        logger,
+        "reply_send_attempt",
+        reply_id=int(rq["id"]),
+        message_id=str(rq.get("message_id") or ""),
+        provider_kind=str(provider.get("kind") or ""),
+        to=to_addr,
+        from_addr=from_addr,
+        subject_len=len(subject or ""),
+        send_mode=send_mode,
+        message_source=("message_payload" if normalized_message else "stored_draft"),
+    )
     send_result: Dict[str, Any]
     if provider["kind"] == "imap":
         send_result = imap_send(from_addr=from_addr, to_addr=to_addr, subject=subject, body=body)
@@ -297,12 +318,20 @@ def reply_send(
         raise RuntimeError(f"Unsupported sender provider: {provider['kind']}")
 
     db.mark_reply_status(rq["id"], "sent", utc_now_iso(), send_mode=send_mode)
+    log_event(
+        logger,
+        "reply_send_success",
+        reply_id=int(rq["id"]),
+        provider_kind=str(provider.get("kind") or ""),
+        to=to_addr,
+        send_mode=send_mode,
+    )
     return {
         "ok": True,
         "index": resolved_index,
         "id": int(rq["id"]),
         "selected_by": "id" if reply_id is not None else "index",
-        "resolved_command": f"mailhub reply send --id {int(rq['id'])} --confirm-text \"send\"",
+        "resolved_command": f"mailhub mail reply send --id {int(rq['id'])} --confirm-text \"send\"",
         "sent_via": provider["kind"],
         "to": to_addr,
         "from": from_addr,
@@ -365,12 +394,19 @@ def send_queue_send_one(
             "reason": "confirm_required",
             "hint": f"Run `{hint_cmd}` to send.",
         }
-    return reply_send(
+    out = reply_send(
         reply_id=reply_id,
         confirm_text="send",
         message_payload=message_payload,
         bypass_message=bypass_message,
     )
+    log_event(
+        logger,
+        "send_queue_send_one_done",
+        reply_id=reply_id,
+        ok=bool(out.get("ok", False)),
+    )
+    return out
 
 
 def send_queue_send_all(confirm: bool, limit: int = 500, *, bypass_message: bool = False) -> Dict[str, Any]:
@@ -397,6 +433,12 @@ def send_queue_send_all(confirm: bool, limit: int = 500, *, bypass_message: bool
             "hint": "--bypass-message is only allowed in standalone mode.",
         }
     queue = send_queue_list(limit=limit)
+    log_event(
+        logger,
+        "send_queue_send_all_start",
+        pending_count=int(queue.get("count") or 0),
+        limit=limit,
+    )
     sent: List[Dict[str, Any]] = []
     failed: List[Dict[str, Any]] = []
     for item in queue.get("items", []):
@@ -407,6 +449,19 @@ def send_queue_send_all(confirm: bool, limit: int = 500, *, bypass_message: bool
             sent.append(reply_send(reply_id=rid, confirm_text="send", bypass_message=True))
         except Exception as exc:
             failed.append({"id": rid, "error": str(exc)})
+            log_event(
+                logger,
+                "send_queue_send_all_item_error",
+                level="error",
+                reply_id=rid,
+                error=str(exc),
+            )
+    log_event(
+        logger,
+        "send_queue_send_all_done",
+        sent_count=len(sent),
+        failed_count=len(failed),
+    )
     return {
         "ok": len(failed) == 0,
         "sent_count": len(sent),
@@ -437,6 +492,13 @@ def reply_compose(
     rq_id = db.enqueue_reply(resolved_message_id, "pending", "manual compose", utc_now_iso())
     subj, body = _build_draft_for_mode(mode=mode, message=msg, disclosure=s.disclosure_text(), content=content)
     db.update_reply_draft(rq_id, subj, body, utc_now_iso())
+    log_event(
+        logger,
+        "reply_compose_draft_created",
+        reply_id=rq_id,
+        message_id=resolved_message_id,
+        mode=mode,
+    )
 
     if review and sys.stdin.isatty():
         while True:
@@ -485,8 +547,8 @@ def reply_compose(
             "c": "manual_edit",
         },
         "next_steps": [
-            f"mailhub reply revise --id {rq_id} --mode optimize --content \"<instructions>\"",
-            f"mailhub reply revise --id {rq_id} --mode raw --content \"<manual body>\"",
+            f"mailhub mail reply revise --id {rq_id} --mode optimize --content \"<instructions>\"",
+            f"mailhub mail reply revise --id {rq_id} --mode raw --content \"<manual body>\"",
             _send_cmd_for_mode(rq_id, s.effective_mode()),
         ],
         "send_queue": send_queue_list(),
@@ -531,10 +593,10 @@ def reply_auto(since: str = "15m", dry_run: bool = True) -> Dict[str, Any]:
     """
     MVP auto-reply:
     - Only drafts and (optionally) sends for pending items
-    - Respects Settings.toggles.auto_reply
+    - Respects Settings.mail.auto_reply
     """
     s = Settings.load()
-    if s.toggles.auto_reply != "on":
+    if s.mail.auto_reply != "on":
         return {"ok": True, "auto_reply": "off"}
 
     db = DB(s.db_path)
@@ -558,6 +620,14 @@ def reply_auto(since: str = "15m", dry_run: bool = True) -> Dict[str, Any]:
 
             sent.append({"queue_id": rq["id"]})
 
+    log_event(
+        logger,
+        "reply_auto_done",
+        since=since,
+        dry_run=dry_run,
+        drafted_count=len(drafted),
+        sent_count=len(sent),
+    )
     return {"ok": True, "dry_run": dry_run, "drafted": drafted, "sent": sent}
 
 
@@ -590,10 +660,10 @@ def reply_center(date: str = "today") -> Dict[str, Any]:
                 "3": "prepare reply for suggested item (id preferred)",
             },
             "next_steps": [
-                f"mailhub reply sent-list --date {day}",
-                f"mailhub reply suggested-list --date {day}",
-                "mailhub reply prepare --id <ID>",
-                "mailhub reply prepare --index <N>",
+                f"mailhub mail reply sent-list --date {day}",
+                f"mailhub mail reply suggested-list --date {day}",
+                "mailhub mail reply prepare --id <ID>",
+                "mailhub mail reply prepare --index <N>",
                 _send_cmd_for_mode(111, mode).replace("111", "<ID>"),
             ],
         }
@@ -659,7 +729,7 @@ def _indexed(items: list[Dict[str, Any]], db: DB) -> list[Dict[str, Any]]:
                 "status": x.get("status") or "",
                 "send_mode": x.get("send_mode") or "",
                 "display": f"index {i}. (Id: {item_id}) {title}",
-                "prepare_cmd": f"mailhub reply prepare --id {item_id}",
+                "prepare_cmd": f"mailhub mail reply prepare --id {item_id}",
                 "send_cmd": _send_cmd_for_mode(item_id, mode),
             }
         )

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from ..config import Settings
-from ..store import DB
-from ..utils.time import today_yyyy_mm_dd_utc
+from ..core.config import Settings
+from ..core.store import DB
+from ..shared.time import today_yyyy_mm_dd_utc
 from .triage import triage_day
 
 
@@ -67,7 +67,7 @@ def _to_simple_list(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "status": x.get("status") or "",
                 "send_mode": x.get("send_mode") or "",
                 "display": f"index {i}. (Id: {item_id}) {title}",
-                "prepare_cmd": f"mailhub reply prepare --id {item_id}",
+                "prepare_cmd": f"mailhub mail reply prepare --id {item_id}",
                 "send_cmd": _send_cmd_for_mode(item_id, mode),
             }
         )

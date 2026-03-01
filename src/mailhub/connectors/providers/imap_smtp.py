@@ -5,15 +5,17 @@ import imaplib
 import json
 import smtplib
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.header import decode_header
+from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
-from ..config import Settings
-from ..security import SecretStore
-from ..store import DB
-from ..utils.time import utc_now_iso, parse_since
+from ...core.config import Settings
+from ...core.security import SecretStore
+from ...core.store import DB
+from ...shared.time import utc_now_iso, parse_since
 
 
 def _decode_mime_words(s: str | None) -> str:
@@ -59,9 +61,10 @@ def auth_imap(
     is_mail: bool = True,
     is_calendar: bool = False,
     is_contacts: bool = False,
-) -> None:
+    mail_cold_start_days: int = 30,
+) -> str:
     """
-    Store IMAP/SMTP config; prompt for app password locally and store in secrets.
+    Store IMAP/SMTP config; prompt for app password locally and store in encrypted secret store.
     """
     s = Settings.load()
     s.ensure_dirs()
@@ -84,12 +87,14 @@ def auth_imap(
             "is_mail": bool(is_mail),
             "is_calendar": bool(is_calendar),
             "is_contacts": bool(is_contacts),
+            "mail_cold_start_days": int(mail_cold_start_days),
             "status": "configured",
         }
     )
 
-    SecretStore(s.secrets_path).set(f"{pid}:password", app_password)
+    SecretStore(s.db_path).set(f"{pid}:password", app_password)
     db.upsert_provider(pid=pid, kind="imap", email=email, meta_json=meta, created_at=utc_now_iso())
+    return pid
 
 
 def _imap_connect(cfg: IMAPConfig, password: str) -> imaplib.IMAP4_SSL:
@@ -119,7 +124,7 @@ def list_recent_headers(since: str = "15m", mailbox: str = "INBOX") -> List[Dict
     for p in providers:
         pid = p["id"]
         cfg = _imap_cfg_from_meta(p["meta_json"])
-        password = SecretStore(s.secrets_path).get(f"{pid}:password")
+        password = SecretStore(s.db_path).get(f"{pid}:password")
         if not password:
             continue
 
@@ -186,9 +191,9 @@ def send_email(from_addr: str, to_addr: str, subject: str, body: str) -> Dict[st
     p = providers[0]
     pid = p["id"]
     cfg = _imap_cfg_from_meta(p["meta_json"])
-    password = SecretStore(s.secrets_path).get(f"{pid}:password")
+    password = SecretStore(s.db_path).get(f"{pid}:password")
     if not password:
-        raise RuntimeError("Missing SMTP password in secrets store")
+        raise RuntimeError("Missing SMTP password in encrypted secret store")
 
     msg = EmailMessage()
     msg["From"] = from_addr
@@ -208,19 +213,29 @@ def send_email(from_addr: str, to_addr: str, subject: str, body: str) -> Dict[st
     return {"ok": True, "provider_id": pid}
 
 
-def fetch_and_store_recent_full(since: str = "36h", mailbox: str = "INBOX") -> Dict[str, Any]:
-    from ..utils.mime import parse_mime, sha256_bytes
-    from ..utils.html import html_to_text
-    from ..utils.time import utc_now_iso
+def fetch_and_store_recent_full(
+    since: str = "36h",
+    mailbox: str = "INBOX",
+    *,
+    provider_id: str = "",
+    last_uid: int = 0,
+    max_fetch: int = 30,
+) -> Dict[str, Any]:
+    from ...shared.mime import parse_mime, sha256_bytes
+    from ...shared.html import html_to_text
+    from ...shared.time import utc_now_iso
 
     s = Settings.load()
     db = DB(s.db_path)
     db.init()
 
     providers = [p for p in db.list_providers() if p["kind"] == "imap"]
-    store = SecretStore(s.secrets_path)
+    if provider_id.strip():
+        providers = [p for p in providers if p["id"] == provider_id.strip()]
+    store = SecretStore(s.db_path)
 
     saved = []
+    max_uid_seen = int(last_uid or 0)
     for p in providers:
         pid = p["id"]
         cfg = _imap_cfg_from_meta(p["meta_json"])
@@ -235,7 +250,10 @@ def fetch_and_store_recent_full(since: str = "36h", mailbox: str = "INBOX") -> D
             typ, data = im.search(None, f'(SINCE "{since_day}")')
             if typ != "OK":
                 continue
-            ids = data[0].split()[-30:]  # MVP cap
+            ids = data[0].split()
+            if last_uid > 0:
+                ids = [x for x in ids if x.isdigit() and int(x) > int(last_uid)]
+            ids = ids[-max(1, int(max_fetch))]
             for uid in ids:
                 typ, msg_data = im.fetch(uid, "(RFC822)")
                 if typ != "OK":
@@ -247,6 +265,12 @@ def fetch_and_store_recent_full(since: str = "36h", mailbox: str = "INBOX") -> D
                 from_ = _decode_mime_words(m.get("From"))
                 to_ = _decode_mime_words(m.get("To"))
                 mid = _decode_mime_words(m.get("Message-ID")) or f"{pid}:{uid.decode()}"
+                try:
+                    uid_int = int(uid.decode(errors="ignore"))
+                    if uid_int > max_uid_seen:
+                        max_uid_seen = uid_int
+                except Exception:
+                    pass
 
                 parsed = parse_mime(m)
                 body_text = parsed.body_text
@@ -255,6 +279,8 @@ def fetch_and_store_recent_full(since: str = "36h", mailbox: str = "INBOX") -> D
                     body_text = html_to_text(body_html)
 
                 now = utc_now_iso()
+                date_header = _decode_mime_words(m.get("Date"))
+                msg_dt_utc = _parse_email_date_utc(date_header)
                 db.upsert_message(
                     {
                         "id": mid,
@@ -263,7 +289,7 @@ def fetch_and_store_recent_full(since: str = "36h", mailbox: str = "INBOX") -> D
                         "from_addr": from_,
                         "to_addrs": to_,
                         "subject": subj,
-                        "date_utc": now[:10] + "T00:00:00Z",
+                        "date_utc": msg_dt_utc,
                         "snippet": (body_text or "")[:500],
                         "body_text": body_text,
                         "body_html": body_html,
@@ -298,11 +324,32 @@ def fetch_and_store_recent_full(since: str = "36h", mailbox: str = "INBOX") -> D
                     finally:
                         con.close()
 
-                saved.append({"id": mid, "subject": subj, "attachments": len(parsed.attachments)})
+                saved.append(
+                    {
+                        "id": mid,
+                        "subject": subj,
+                        "attachments": len(parsed.attachments),
+                        "date_utc": msg_dt_utc,
+                        "uid": uid.decode(errors="ignore"),
+                    }
+                )
         finally:
             try:
                 im.logout()
             except Exception:
                 pass
 
-    return {"ok": True, "saved": saved}
+    return {"ok": True, "saved": saved, "max_uid_seen": max_uid_seen}
+
+
+def _parse_email_date_utc(raw: str) -> str:
+    s = (raw or "").strip()
+    if not s:
+        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    try:
+        dt = parsedate_to_datetime(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    except Exception:
+        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

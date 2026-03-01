@@ -7,14 +7,36 @@ from typing import Any, Dict, Optional
 
 import typer
 
-from .accounts import list_accounts, update_account_profile
-from .config import Settings
-from .providers.google_gmail import auth_google
-from .providers.ms_graph import auth_microsoft
-from .providers.imap_smtp import auth_imap
-from .providers.caldav import auth_caldav
-from .providers.carddav import auth_carddav
-from .store import DB
+from ..core.accounts import list_accounts, update_account_profile
+from ..core.config import Settings
+from ..connectors.providers.google_gmail import auth_google
+from ..connectors.providers.ms_graph import auth_microsoft
+from ..connectors.providers.imap_smtp import auth_imap
+from ..connectors.providers.caldav import auth_caldav
+from ..connectors.providers.carddav import auth_carddav
+from ..flows.ingest import inbox_bootstrap_provider
+from ..core.logging import get_logger, log_event
+from ..core.store import DB
+
+logger = get_logger(__name__)
+
+
+def _bootstrap_total_from_out(out: Dict[str, Any]) -> int:
+    bootstrap = out.get("bootstrap")
+    if not isinstance(bootstrap, dict):
+        return 0
+    poll = bootstrap.get("bootstrap")
+    if not isinstance(poll, dict):
+        return 0
+    items = poll.get("items")
+    if not isinstance(items, list):
+        return 0
+    total = 0
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        total += int(item.get("count") or 0)
+    return total
 
 
 def bind_menu() -> Dict[str, Any]:
@@ -85,12 +107,17 @@ def bind_provider(
     is_mail: Optional[bool] = None,
     is_calendar: Optional[bool] = None,
     is_contacts: Optional[bool] = None,
+    cold_start_days: int | None = None,
+    bootstrap_after_bind: bool = True,
 ) -> Dict[str, Any]:
     s = Settings.load()
     s.ensure_dirs()
 
     p = provider.strip().lower()
     a = (alias or "").strip()
+    cold_days = int(cold_start_days or 30)
+    bound_provider_id = ""
+    mail_enabled = True if is_mail is None else bool(is_mail)
 
     if p == "google":
         if google_client_id:
@@ -105,45 +132,90 @@ def bind_provider(
                 "Set GOOGLE_OAUTH_CLIENT_SECRET (exported) or run `mailhub config --wizard`."
             )
         s.save()
-        auth_google(
+        bound_provider_id = auth_google(
             scopes=(scopes or "gmail,calendar,contacts"),
             alias=a,
-            is_mail=True if is_mail is None else bool(is_mail),
+            is_mail=mail_enabled,
             is_calendar=True if is_calendar is None else bool(is_calendar),
             is_contacts=True if is_contacts is None else bool(is_contacts),
+            mail_cold_start_days=cold_days,
             client_id_override=(google_client_id or "").strip(),
             client_secret_override=(google_client_secret or "").strip(),
             manual_code=(google_code or "").strip(),
         )
-        return {"ok": True, "bound": "google"}
+        out: Dict[str, Any] = {"ok": True, "bound": "google", "provider_id": bound_provider_id}
+        if bootstrap_after_bind and mail_enabled and bound_provider_id:
+            out["bootstrap"] = inbox_bootstrap_provider(bound_provider_id, cold_start_days=cold_days)
+        bootstrap_count = _bootstrap_total_from_out(out)
+        log_event(
+            logger,
+            "bind_provider_done",
+            provider="google",
+            provider_id=bound_provider_id,
+            alias=a,
+            mail_enabled=mail_enabled,
+            bootstrap_requested=bootstrap_after_bind and mail_enabled,
+            bootstrap_first_count=bootstrap_count,
+        )
+        return out
 
     if p == "microsoft":
         if ms_client_id:
             s.oauth.ms_client_id = ms_client_id.strip()
             s.save()
-        auth_microsoft(
+        bound_provider_id = auth_microsoft(
             scopes=(scopes or "mail,calendar,contacts"),
             alias=a,
-            is_mail=True if is_mail is None else bool(is_mail),
+            is_mail=mail_enabled,
             is_calendar=True if is_calendar is None else bool(is_calendar),
             is_contacts=True if is_contacts is None else bool(is_contacts),
+            mail_cold_start_days=cold_days,
             client_id_override=(ms_client_id or "").strip(),
         )
-        return {"ok": True, "bound": "microsoft"}
+        out = {"ok": True, "bound": "microsoft", "provider_id": bound_provider_id}
+        if bootstrap_after_bind and mail_enabled and bound_provider_id:
+            out["bootstrap"] = inbox_bootstrap_provider(bound_provider_id, cold_start_days=cold_days)
+        bootstrap_count = _bootstrap_total_from_out(out)
+        log_event(
+            logger,
+            "bind_provider_done",
+            provider="microsoft",
+            provider_id=bound_provider_id,
+            alias=a,
+            mail_enabled=mail_enabled,
+            bootstrap_requested=bootstrap_after_bind and mail_enabled,
+            bootstrap_first_count=bootstrap_count,
+        )
+        return out
 
     if p == "imap":
         if not (email and imap_host and smtp_host):
             raise RuntimeError("IMAP requires --email --imap-host --smtp-host")
-        auth_imap(
+        bound_provider_id = auth_imap(
             email=email,
             imap_host=imap_host,
             smtp_host=smtp_host,
             alias=a,
-            is_mail=True if is_mail is None else bool(is_mail),
+            is_mail=mail_enabled,
             is_calendar=False if is_calendar is None else bool(is_calendar),
             is_contacts=False if is_contacts is None else bool(is_contacts),
+            mail_cold_start_days=cold_days,
         )
-        return {"ok": True, "bound": "imap", "email": email}
+        out = {"ok": True, "bound": "imap", "email": email, "provider_id": bound_provider_id}
+        if bootstrap_after_bind and mail_enabled and bound_provider_id:
+            out["bootstrap"] = inbox_bootstrap_provider(bound_provider_id, cold_start_days=cold_days)
+        bootstrap_count = _bootstrap_total_from_out(out)
+        log_event(
+            logger,
+            "bind_provider_done",
+            provider="imap",
+            provider_id=bound_provider_id,
+            alias=a,
+            mail_enabled=mail_enabled,
+            bootstrap_requested=bootstrap_after_bind and mail_enabled,
+            bootstrap_first_count=bootstrap_count,
+        )
+        return out
 
     if p == "caldav":
         if not (username and host):
@@ -156,7 +228,9 @@ def bind_provider(
             is_calendar=True if is_calendar is None else bool(is_calendar),
             is_contacts=False if is_contacts is None else bool(is_contacts),
         )
-        return {"ok": True, "bound": "caldav", "username": username}
+        out = {"ok": True, "bound": "caldav", "username": username}
+        log_event(logger, "bind_provider_done", provider="caldav", alias=a, username=username or "")
+        return out
 
     if p == "carddav":
         if not (username and host):
@@ -169,7 +243,9 @@ def bind_provider(
             is_calendar=False if is_calendar is None else bool(is_calendar),
             is_contacts=True if is_contacts is None else bool(is_contacts),
         )
-        return {"ok": True, "bound": "carddav", "username": username}
+        out = {"ok": True, "bound": "carddav", "username": username}
+        log_event(logger, "bind_provider_done", provider="carddav", alias=a, username=username or "")
+        return out
 
     raise RuntimeError(f"Unknown provider: {provider}")
 
@@ -204,25 +280,58 @@ def bind_update_account(
 
 def _bind_add_choice(choice: str) -> Dict[str, Any]:
     if choice == "1":
+        typer.echo("Google bind method:")
+        typer.echo("1) OAuth (recommended)")
+        typer.echo("2) App Password via IMAP/SMTP")
+        method = typer.prompt("Select method", default="1").strip()
+        if method == "2":
+            email = typer.prompt("Google email address")
+            alias = typer.prompt("Alias (optional)", default="")
+            cold_start_days = int(typer.prompt("Cold start days", default="30").strip() or "30")
+            return bind_provider(
+                provider="imap",
+                email=email,
+                imap_host="imap.gmail.com",
+                smtp_host="smtp.gmail.com",
+                alias=alias,
+                cold_start_days=cold_start_days,
+            )
         s = Settings.load()
         _ensure_google_client(s)
         alias = typer.prompt("Alias (optional)", default="")
         scopes = typer.prompt("Scopes (comma separated, or 'all')", default="gmail,calendar,contacts")
+        cold_start_days = int(typer.prompt("Cold start days", default="30").strip() or "30")
         typer.echo("Google OAuth will open in browser. Keep this terminal running until callback completes.")
-        return bind_provider(provider="google", scopes=scopes, alias=alias)
+        return bind_provider(provider="google", scopes=scopes, alias=alias, cold_start_days=cold_start_days)
     if choice == "2":
         s = Settings.load()
         _ensure_ms_client(s)
         alias = typer.prompt("Alias (optional)", default="")
         scopes = typer.prompt("Scopes (comma separated, or 'all')", default="mail,calendar,contacts")
-        return bind_provider(provider="microsoft", scopes=scopes, alias=alias)
+        cold_start_days = int(typer.prompt("Cold start days", default="30").strip() or "30")
+        return bind_provider(provider="microsoft", scopes=scopes, alias=alias, cold_start_days=cold_start_days)
     if choice == "3":
+        proto = typer.prompt("Protocol (imap|pop3)", default="imap").strip().lower()
+        if proto == "pop3":
+            return {
+                "ok": False,
+                "reason": "unsupported_protocol",
+                "message": "POP3 is not supported yet. Use IMAP/SMTP.",
+            }
         email = typer.prompt("Email address")
         alias = typer.prompt("Alias (optional)", default="")
         imap_host = typer.prompt("IMAP host", default="imap.gmail.com")
         smtp_host = typer.prompt("SMTP host", default="smtp.gmail.com")
+        cold_start_days = int(typer.prompt("Cold start days", default="30").strip() or "30")
         typer.echo("You will be prompted for app password securely (input hidden).")
-        return bind_provider(provider="imap", email=email, imap_host=imap_host, smtp_host=smtp_host, alias=alias)
+        return bind_provider(
+            provider="imap",
+            email=email,
+            imap_host=imap_host,
+            smtp_host=smtp_host,
+            alias=alias,
+            cold_start_days=cold_start_days,
+        )
     if choice == "4":
         username = typer.prompt("CalDAV username")
         alias = typer.prompt("Alias (optional)", default="")

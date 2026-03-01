@@ -16,10 +16,10 @@ from urllib.parse import parse_qs, urlparse
 import requests
 from requests import HTTPError
 
-from ..config import Settings
-from ..security import SecretStore
-from ..store import DB
-from ..utils.time import utc_now_iso, parse_since
+from ...core.config import Settings
+from ...core.security import SecretStore
+from ...core.store import DB
+from ...shared.time import utc_now_iso, parse_since
 
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -210,10 +210,11 @@ def auth_google(
     is_mail: bool = True,
     is_calendar: bool = True,
     is_contacts: bool = True,
+    mail_cold_start_days: int = 30,
     client_id_override: str = "",
     client_secret_override: str = "",
     manual_code: str = "",
-) -> None:
+) -> str:
     s = Settings.load()
     s.ensure_dirs()
     db = DB(s.db_path)
@@ -294,10 +295,10 @@ def auth_google(
     email_addr = _gmail_get_profile_email(access_token)
     pid = f"google:{email_addr}"
 
-    SecretStore(s.secrets_path).set(f"{pid}:access_token", access_token)
+    SecretStore(s.db_path).set(f"{pid}:access_token", access_token)
     if refresh_token:
-        SecretStore(s.secrets_path).set(f"{pid}:refresh_token", refresh_token)
-    SecretStore(s.secrets_path).set(f"{pid}:expires_at", str(expires_at))
+        SecretStore(s.db_path).set(f"{pid}:refresh_token", refresh_token)
+    SecretStore(s.db_path).set(f"{pid}:expires_at", str(expires_at))
     meta = json.dumps(
         {
             "alias": alias.strip(),
@@ -310,10 +311,12 @@ def auth_google(
             "is_mail": bool(is_mail),
             "is_calendar": bool(is_calendar),
             "is_contacts": bool(is_contacts),
+            "mail_cold_start_days": int(mail_cold_start_days),
             "status": "configured",
         }
     )
     db.upsert_provider(pid=pid, kind="google", email=email_addr, meta_json=meta, created_at=utc_now_iso())
+    return pid
 
 
 def _gmail_get_profile_email(access_token: str) -> str:
@@ -363,40 +366,58 @@ def _refresh_if_needed(pid: str, store: SecretStore) -> str:
     return access_token
 
 
-def gmail_list_messages(since: str = "15m", max_results: int = 50) -> List[Dict[str, Any]]:
+def gmail_list_messages(
+    since: str = "15m",
+    max_results: int = 50,
+    *,
+    provider_id: str = "",
+    after_epoch: int | None = None,
+    page_token: str = "",
+    include_next: bool = False,
+) -> List[Dict[str, Any]] | Dict[str, Any]:
     s = Settings.load()
     db = DB(s.db_path)
     db.init()
     providers = [p for p in db.list_providers() if p["kind"] == "google"]
+    if provider_id.strip():
+        providers = [p for p in providers if p["id"] == provider_id.strip()]
     if not providers:
-        return []
+        return {"items": [], "next_page_token": ""} if include_next else []
 
-    dt = parse_since(since)
-    after_epoch = int(dt.timestamp())
+    if after_epoch is None:
+        dt = parse_since(since)
+        after_epoch = int(dt.timestamp())
 
     out: List[Dict[str, Any]] = []
-    store = SecretStore(s.secrets_path)
+    store = SecretStore(s.db_path)
+    next_page_token = ""
 
     for p in providers:
         pid = p["id"]
         access = _refresh_if_needed(pid, store)
-        q = f"after:{after_epoch}"
+        params: Dict[str, Any] = {"q": f"after:{int(after_epoch)}", "maxResults": int(max_results)}
+        if page_token.strip():
+            params["pageToken"] = page_token.strip()
         r = requests.get(
             f"{GMAIL_API}/users/me/messages",
-            params={"q": q, "maxResults": max_results},
+            params=params,
             headers={"Authorization": f"Bearer {access}"},
             timeout=30,
         )
         r.raise_for_status()
-        ids = [m["id"] for m in r.json().get("messages", [])]
+        body = r.json()
+        ids = [m["id"] for m in body.get("messages", [])]
+        next_page_token = str(body.get("nextPageToken") or "")
         for mid in ids:
             out.append({"provider_id": pid, "gmail_id": mid})
+    if include_next:
+        return {"items": out, "next_page_token": next_page_token}
     return out
 
 
 def gmail_get_message(provider_id: str, gmail_id: str) -> Dict[str, Any]:
     s = Settings.load()
-    store = SecretStore(s.secrets_path)
+    store = SecretStore(s.db_path)
     access = _refresh_if_needed(provider_id, store)
 
     r = requests.get(
@@ -411,7 +432,7 @@ def gmail_get_message(provider_id: str, gmail_id: str) -> Dict[str, Any]:
 
 def gmail_send(provider_id: str, raw_rfc822: bytes) -> Dict[str, Any]:
     s = Settings.load()
-    store = SecretStore(s.secrets_path)
+    store = SecretStore(s.db_path)
     access = _refresh_if_needed(provider_id, store)
 
     b64 = base64.urlsafe_b64encode(raw_rfc822).decode("ascii")
@@ -426,7 +447,7 @@ def gmail_send(provider_id: str, raw_rfc822: bytes) -> Dict[str, Any]:
 
 
 def google_calendar_list_events(provider_id: str, time_min_iso: str, time_max_iso: str, max_results: int = 50) -> List[Dict[str, Any]]:
-    store = SecretStore(Settings.load().secrets_path)
+    store = SecretStore(Settings.load().db_path)
     access = _refresh_if_needed(provider_id, store)
 
     r = requests.get(
@@ -454,7 +475,7 @@ def google_calendar_create_event(
     location: str = "",
     description: str = "",
 ) -> Dict[str, Any]:
-    store = SecretStore(Settings.load().secrets_path)
+    store = SecretStore(Settings.load().db_path)
     access = _refresh_if_needed(provider_id, store)
     payload: Dict[str, Any] = {
         "summary": summary.strip(),
@@ -476,7 +497,7 @@ def google_calendar_create_event(
 
 
 def google_calendar_delete_event(provider_id: str, event_id: str) -> Dict[str, Any]:
-    store = SecretStore(Settings.load().secrets_path)
+    store = SecretStore(Settings.load().db_path)
     access = _refresh_if_needed(provider_id, store)
     r = requests.delete(
         f"{CAL_API}/calendars/primary/events/{event_id}",

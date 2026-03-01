@@ -1,9 +1,27 @@
 from __future__ import annotations
 
-import sqlite3
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+try:
+    from pysqlcipher3 import dbapi2 as sqlcipher
+except Exception as _sqlcipher_import_error:  # pragma: no cover - runtime env dependent
+    try:
+        from sqlcipher3 import dbapi2 as sqlcipher
+    except Exception as _sqlcipher_import_error2:  # pragma: no cover - runtime env dependent
+        sqlcipher = None
+        SQLCIPHER_IMPORT_ERROR = (_sqlcipher_import_error, _sqlcipher_import_error2)
+    else:  # pragma: no cover - runtime env dependent
+        SQLCIPHER_IMPORT_ERROR = None
+else:  # pragma: no cover - runtime env dependent
+    SQLCIPHER_IMPORT_ERROR = None
+
+from .dbkey_backend import (
+    default_local_dbkey_path,
+    read_dbkey,
+)
 
 
 SCHEMA = """
@@ -76,6 +94,7 @@ CREATE TABLE IF NOT EXISTS kv (
   k TEXT PRIMARY KEY,
   v TEXT NOT NULL,
   updated_at TEXT NOT NULL
+  -- secret:* keys hold provider credentials/tokens inside SQLCipher-encrypted DB
 );
 
 CREATE TABLE IF NOT EXISTS attachments (
@@ -129,10 +148,68 @@ CREATE INDEX IF NOT EXISTS idx_calendar_events_provider_start ON calendar_events
 @dataclass
 class DB:
     path: Path
+    dbkey: bytes | None = None
+    dbkey_backend: str = ""
+    dbkey_local_path: Path | None = None
+    dbkey_keychain_account: str = ""
 
-    def connect(self) -> sqlite3.Connection:
-        con = sqlite3.connect(str(self.path))
-        con.row_factory = sqlite3.Row
+    def _restrict_fs_permissions(self) -> None:
+        if os.name == "nt":
+            return
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            os.chmod(self.path.parent, 0o700)
+        except Exception:
+            pass
+        for p in (
+            self.path,
+            Path(str(self.path) + "-wal"),
+            Path(str(self.path) + "-shm"),
+        ):
+            try:
+                if p.exists():
+                    os.chmod(p, 0o600)
+            except Exception:
+                pass
+
+    def _resolve_dbkey(self) -> bytes:
+        if self.dbkey is not None:
+            return self.dbkey
+
+        from .config import Settings
+
+        s = Settings.load()
+        backend = (self.dbkey_backend or s.effective_dbkey_backend()).strip().lower()
+        local_path = self.dbkey_local_path or default_local_dbkey_path(
+            s.state_dir, s.security.dbkey_local_path
+        )
+        account = self.dbkey_keychain_account or s.effective_dbkey_keychain_account()
+        key = read_dbkey(
+            backend=backend,
+            state_dir=s.state_dir,
+            local_dbkey_path=local_path,
+            keychain_account=account,
+        )
+        if len(key) != 32:
+            raise RuntimeError("Invalid dbkey length (must be 32 bytes).")
+        self.dbkey = key
+        return key
+
+    def connect(self):
+        if sqlcipher is None:
+            raise RuntimeError(
+                "SQLCipher driver unavailable. Install `sqlcipher3-binary` or `pysqlcipher3`. "
+                f"import_error={SQLCIPHER_IMPORT_ERROR!r}"
+            )
+        con = sqlcipher.connect(str(self.path))
+        con.row_factory = sqlcipher.Row
+        key = self._resolve_dbkey()
+        hex_key = key.hex()
+        con.execute(f"PRAGMA key = \"x'{hex_key}'\";")
+        con.execute("PRAGMA cipher_memory_security = ON;")
+        con.execute("PRAGMA foreign_keys = ON;")
+        # Force key validation early.
+        con.execute("SELECT count(*) FROM sqlite_master").fetchone()
         return con
 
     def init(self) -> None:
@@ -142,11 +219,12 @@ class DB:
             # Backward-compatible migration for existing DBs.
             try:
                 con.execute("ALTER TABLE reply_queue ADD COLUMN send_mode TEXT NOT NULL DEFAULT 'manual'")
-            except sqlite3.OperationalError:
+            except Exception:
                 pass
             con.commit()
         finally:
             con.close()
+        self._restrict_fs_permissions()
 
     def upsert_provider(self, pid: str, kind: str, email: str | None, meta_json: str, created_at: str) -> None:
         con = self.connect()
@@ -557,6 +635,14 @@ class DB:
         finally:
             con.close()
 
+    def kv_delete(self, key: str) -> None:
+        con = self.connect()
+        try:
+            con.execute("DELETE FROM kv WHERE k=?", (key,))
+            con.commit()
+        finally:
+            con.close()
+
     def upsert_calendar_event(
         self,
         *,
@@ -664,5 +750,70 @@ class DB:
                 (event_id,),
             ).fetchall()
             return [dict(r) for r in rows]
+        finally:
+            con.close()
+
+    def list_messages_in_range(
+        self,
+        *,
+        start_utc: str,
+        end_utc: str,
+        limit: int = 5000,
+    ) -> List[Dict[str, Any]]:
+        con = self.connect()
+        try:
+            rows = con.execute(
+                """
+                SELECT rowid AS mail_id, * FROM messages
+                WHERE date_utc >= ? AND date_utc < ?
+                ORDER BY date_utc DESC
+                LIMIT ?
+                """,
+                (start_utc, end_utc, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            con.close()
+
+    def list_tag_counts_in_range(self, *, start_utc: str, end_utc: str) -> List[Tuple[str, int]]:
+        con = self.connect()
+        try:
+            rows = con.execute(
+                """
+                SELECT mt.tag AS tag, COUNT(*) AS c
+                FROM message_tags mt
+                JOIN messages m ON m.id = mt.message_id
+                WHERE m.date_utc >= ? AND m.date_utc < ?
+                GROUP BY mt.tag
+                ORDER BY c DESC
+                """,
+                (start_utc, end_utc),
+            ).fetchall()
+            return [(str(r["tag"]), int(r["c"])) for r in rows]
+        finally:
+            con.close()
+
+    def reply_status_counts_in_range(self, *, start_utc: str, end_utc: str) -> Dict[str, int]:
+        con = self.connect()
+        out: Dict[str, int] = {"pending": 0, "sent": 0, "skipped": 0, "auto_sent": 0}
+        try:
+            rows = con.execute(
+                """
+                SELECT rq.status AS status, rq.send_mode AS send_mode, COUNT(*) AS c
+                FROM reply_queue rq
+                JOIN messages m ON m.id = rq.message_id
+                WHERE m.date_utc >= ? AND m.date_utc < ?
+                GROUP BY rq.status, rq.send_mode
+                """,
+                (start_utc, end_utc),
+            ).fetchall()
+            for r in rows:
+                status = str(r["status"] or "")
+                c = int(r["c"] or 0)
+                if status in out:
+                    out[status] += c
+                if status == "sent" and str(r["send_mode"] or "") == "auto":
+                    out["auto_sent"] += c
+            return out
         finally:
             con.close()

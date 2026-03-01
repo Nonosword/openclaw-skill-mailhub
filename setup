@@ -2,15 +2,15 @@
 set -euo pipefail
 
 # Usage:
-#   ./setup --dir <SKILL_DIR> [--source env] [--mode openclaw|standalone] [--openclaw-json <path>] [--standalone-models <path>]
+#   ./setup --dir <SKILL_DIR> [--source env] [--mode openclaw|standalone] [--openclaw-json <path>] [--standalone-models <path>] [--model-source openclaw|own] [--install-service]
 #   ./setup [SKILL_DIR]
 # Example:
-#   ~/.openclaw/skills/mailhub/setup --dir ~/.openclaw/skills/mailhub --source env --mode standalone --openclaw-json ~/.openclaw/openclaw.json --standalone-models ~/.openclaw/state/mailhub/standalone.models.json
+#   ~/.openclaw/skills/mailhub/setup --dir ~/.openclaw/skills/mailhub --source env --mode standalone --model-source openclaw --openclaw-json ~/.openclaw/openclaw.json --install-service
 
 usage() {
   cat <<'EOF'
 Usage:
-  setup --dir <SKILL_DIR> [--source env] [--mode openclaw|standalone] [--openclaw-json <path>] [--standalone-models <path>]
+  setup --dir <SKILL_DIR> [--source env] [--mode openclaw|standalone] [--openclaw-json <path>] [--standalone-models <path>] [--model-source openclaw|own] [--install-service]
   setup [SKILL_DIR]
 
 Options:
@@ -19,7 +19,10 @@ Options:
   --mode <value>   Routing mode: openclaw (default) or standalone.
   --openclaw-json  Path to openclaw.json (default: ~/.openclaw/openclaw.json).
   --standalone-models Path to standalone models JSON (default: ~/.openclaw/state/mailhub/standalone.models.json).
-  --wizard         Interactive setup prompts for routing mode/path.
+  --model-source   Standalone model source: openclaw (reuse OpenClaw runner style) or own (user-managed models file).
+  --install-service Install and start background loop service when mode=standalone.
+  --interval-seconds Loop interval for background service (default: 60).
+  --wizard         Interactive setup prompts.
   -h, --help       Show this help.
 EOF
 }
@@ -29,6 +32,10 @@ SOURCE_MODE="none"
 MODE="openclaw"
 OPENCLAW_JSON="${HOME}/.openclaw/openclaw.json"
 STANDALONE_MODELS="${HOME}/.openclaw/state/mailhub/standalone.models.json"
+STANDALONE_MODEL_SOURCE="openclaw"
+STANDALONE_AGENT_ID="${MAILHUB_STANDALONE_AGENT_ID:-}"
+INSTALL_SERVICE=0
+LOOP_INTERVAL=60
 WIZARD=0
 EXPLICIT_ROUTING=0
 POSITIONAL=()
@@ -59,6 +66,23 @@ while [[ $# -gt 0 ]]; do
     --standalone-models)
       [[ $# -ge 2 ]] || { echo "[setup] --standalone-models requires a path" >&2; exit 2; }
       STANDALONE_MODELS="$2"
+      EXPLICIT_ROUTING=1
+      shift 2
+      ;;
+    --model-source)
+      [[ $# -ge 2 ]] || { echo "[setup] --model-source requires a value" >&2; exit 2; }
+      STANDALONE_MODEL_SOURCE="$2"
+      EXPLICIT_ROUTING=1
+      shift 2
+      ;;
+    --install-service)
+      INSTALL_SERVICE=1
+      EXPLICIT_ROUTING=1
+      shift
+      ;;
+    --interval-seconds)
+      [[ $# -ge 2 ]] || { echo "[setup] --interval-seconds requires a value" >&2; exit 2; }
+      LOOP_INTERVAL="$2"
       EXPLICIT_ROUTING=1
       shift 2
       ;;
@@ -112,10 +136,32 @@ if [[ "${WIZARD}" -eq 1 && -t 0 ]]; then
     OPENCLAW_JSON="${OCJ_INPUT}"
   fi
   if [[ "${MODE}" == "standalone" ]]; then
+    read -r -p "Standalone model source [${STANDALONE_MODEL_SOURCE}] (openclaw|own): " SMS_INPUT
+    SMS_INPUT="$(echo "${SMS_INPUT:-}" | tr '[:upper:]' '[:lower:]' | xargs)"
+    if [[ -n "${SMS_INPUT}" ]]; then
+      STANDALONE_MODEL_SOURCE="${SMS_INPUT}"
+    fi
     read -r -p "Standalone models path [${STANDALONE_MODELS}]: " SM_INPUT
     SM_INPUT="$(echo "${SM_INPUT:-}" | xargs)"
     if [[ -n "${SM_INPUT}" ]]; then
       STANDALONE_MODELS="${SM_INPUT}"
+    fi
+    if [[ "${STANDALONE_MODEL_SOURCE}" == "openclaw" ]]; then
+      read -r -p "Standalone agent id (for runner args, optional) [${STANDALONE_AGENT_ID}]: " SAI_INPUT
+      SAI_INPUT="$(echo "${SAI_INPUT:-}" | xargs)"
+      if [[ -n "${SAI_INPUT}" ]]; then
+        STANDALONE_AGENT_ID="${SAI_INPUT}"
+      fi
+    fi
+    read -r -p "Install and start background service now? [n] (y/N): " INSTALL_INPUT
+    INSTALL_INPUT="$(echo "${INSTALL_INPUT:-}" | tr '[:upper:]' '[:lower:]' | xargs)"
+    if [[ "${INSTALL_INPUT}" == "y" || "${INSTALL_INPUT}" == "yes" ]]; then
+      INSTALL_SERVICE=1
+      read -r -p "Loop interval seconds [${LOOP_INTERVAL}]: " LOOP_INPUT
+      LOOP_INPUT="$(echo "${LOOP_INPUT:-}" | xargs)"
+      if [[ -n "${LOOP_INPUT}" ]]; then
+        LOOP_INTERVAL="${LOOP_INPUT}"
+      fi
     fi
   fi
 fi
@@ -135,6 +181,24 @@ case "${MODE}" in
     exit 2
     ;;
 esac
+
+if [[ "${MODE}" == "standalone" ]]; then
+  case "${STANDALONE_MODEL_SOURCE}" in
+    openclaw|own) ;;
+    *)
+      echo "[setup] unsupported --model-source value: ${STANDALONE_MODEL_SOURCE} (supported: openclaw|own)" >&2
+      exit 2
+      ;;
+  esac
+fi
+
+if ! [[ "${LOOP_INTERVAL}" =~ ^[0-9]+$ ]]; then
+  echo "[setup] --interval-seconds must be a positive integer" >&2
+  exit 2
+fi
+if [[ "${LOOP_INTERVAL}" -lt 5 ]]; then
+  LOOP_INTERVAL=5
+fi
 
 if [[ "${SOURCE_MODE}" == "env" ]]; then
   ENV_FILE="${SKILL_DIR}/.env"
@@ -175,9 +239,16 @@ fi
 mkdir -p "${STATE_DIR}"
 mkdir -p "$(dirname "${LAUNCHER}")"
 
+SETTINGS_TEMPLATE_ROOT="${SKILL_DIR}/template/settings.template.json"
+SETTINGS_TARGET="${STATE_DIR}/settings.json"
+if [[ ! -f "${SETTINGS_TARGET}" && -f "${SETTINGS_TEMPLATE_ROOT}" ]]; then
+  cp "${SETTINGS_TEMPLATE_ROOT}" "${SETTINGS_TARGET}"
+fi
+
 cat > "${LAUNCHER}" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 export MAILHUB_SKILL_DIR="${SKILL_DIR}"
 export MAILHUB_ENV_FILE="\${MAILHUB_ENV_FILE:-${SKILL_DIR}/.env}"
 export MAILHUB_MODE="\${MAILHUB_MODE:-${MODE}}"
@@ -205,6 +276,13 @@ if [[ ":${PATH}:" != *":${HOME}/.local/bin:"* ]]; then
   echo "export PATH=\"${HOME}/.local/bin:\$PATH\""
 fi
 
+echo "[setup] configuring SQLCipher dbkey backend (step 1)..."
+if [[ -t 0 ]]; then
+  "${LAUNCHER}" dbkey-setup
+else
+  "${LAUNCHER}" dbkey-setup --auto --non-interactive
+fi
+
 echo "[setup] running doctor..."
 "${LAUNCHER}" doctor
 echo "[setup] configuring routing mode=${MODE}"
@@ -217,22 +295,163 @@ fi
 
 # Ensure standalone models json exists and is editable.
 STANDALONE_MODELS_EXPANDED="$("${VENV_DIR}/bin/python" -c 'import os, pathlib, sys; p=pathlib.Path(os.path.expandvars(sys.argv[1])).expanduser(); print(str(p))' "${STANDALONE_MODELS}")"
-STANDALONE_TEMPLATE_ROOT="${SKILL_DIR}/standalone.models.template.json"
+STANDALONE_TEMPLATE_ROOT="${SKILL_DIR}/template/standalone.models.template.json"
 mkdir -p "$(dirname "${STANDALONE_MODELS_EXPANDED}")"
 if [[ ! -f "${STANDALONE_MODELS_EXPANDED}" ]]; then
-  echo "{}" > "${STANDALONE_MODELS_EXPANDED}"
+  if [[ -f "${STANDALONE_TEMPLATE_ROOT}" ]]; then
+    cp "${STANDALONE_TEMPLATE_ROOT}" "${STANDALONE_MODELS_EXPANDED}"
+  else
+    echo "{}" > "${STANDALONE_MODELS_EXPANDED}"
+  fi
 fi
 
 if [[ "${MODE}" == "standalone" ]]; then
   echo "[setup] standalone mode selected."
+  echo "[setup] standalone model source: ${STANDALONE_MODEL_SOURCE}"
   echo "[setup] standalone models file: ${STANDALONE_MODELS_EXPANDED}"
-  echo "[setup] standalone models template (repo root): ${STANDALONE_TEMPLATE_ROOT}"
+  echo "[setup] standalone models template: ${STANDALONE_TEMPLATE_ROOT}"
   if [[ ! -f "${STANDALONE_TEMPLATE_ROOT}" ]]; then
     echo "[setup] warning: template not found at ${STANDALONE_TEMPLATE_ROOT}"
   fi
-  echo "[setup] configure runner + agent in standalone models JSON:"
-  echo "  - runner.command"
-  echo "  - runner.args"
-  echo "  - agent.id"
+  if [[ "${STANDALONE_MODEL_SOURCE}" == "openclaw" ]]; then
+    echo "[setup] applying OpenClaw-model preset to standalone models..."
+    "${VENV_DIR}/bin/python" - <<'PY' "${STANDALONE_MODELS_EXPANDED}" "${STANDALONE_AGENT_ID}"
+import json
+import pathlib
+import sys
+
+models_path = pathlib.Path(sys.argv[1])
+agent_id = (sys.argv[2] or "").strip()
+data = {}
+try:
+    raw = models_path.read_text(encoding="utf-8")
+    loaded = json.loads(raw)
+    if isinstance(loaded, dict):
+        data = loaded
+except Exception:
+    data = {}
+
+runner = data.get("runner", {})
+if not isinstance(runner, dict):
+    runner = {}
+runner.setdefault("command", "openclaw")
+runner.setdefault("args", ["agent", "run", "--stdio", "--agent-id", "{agent_id}", "--config", "{openclaw_json_path}"])
+if not str(runner.get("command") or "").strip():
+    runner["command"] = "openclaw"
+data["runner"] = runner
+
+agent = data.get("agent", {})
+if not isinstance(agent, dict):
+    agent = {}
+if agent_id:
+    agent["id"] = agent_id
+data["agent"] = agent
+
+defaults = data.get("defaults", {})
+if not isinstance(defaults, dict):
+    defaults = {}
+data["defaults"] = defaults
+data.setdefault("providers", {})
+data.setdefault("notes", "Edit this file to control standalone model routing and runner command.")
+
+models_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+PY
+    echo "[setup] OpenClaw-model preset applied."
+    if [[ -z "${STANDALONE_AGENT_ID}" ]]; then
+      echo "[setup] warning: agent.id is empty; set it in ${STANDALONE_MODELS_EXPANDED} if your runner requires it."
+    fi
+    echo "[setup] openclaw json path: ${OPENCLAW_JSON}"
+  else
+    echo "[setup] own-model mode: template generated. Please fill:"
+    echo "  - runner.command"
+    echo "  - runner.args"
+    echo "  - agent.id / defaults.primary_model"
+  fi
 fi
+
+install_standalone_service() {
+  local interval="$1"
+  local uname_s
+  uname_s="$(uname -s || true)"
+  if [[ "${uname_s}" == "Darwin" ]]; then
+    local plist_dir="${HOME}/Library/LaunchAgents"
+    local plist_path="${plist_dir}/com.mailhub.loop.plist"
+    mkdir -p "${plist_dir}"
+    cat > "${plist_path}" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key><string>com.mailhub.loop</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>${LAUNCHER}</string>
+      <string>mail</string>
+      <string>loop</string>
+      <string>--interval-seconds</string>
+      <string>${interval}</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>MAILHUB_MODE</key><string>standalone</string>
+      <key>MAILHUB_LOG_LEVEL</key><string>INFO</string>
+    </dict>
+  </dict>
+</plist>
+PLIST
+    if command -v launchctl >/dev/null 2>&1; then
+      launchctl unload "${plist_path}" >/dev/null 2>&1 || true
+      if launchctl load "${plist_path}" >/dev/null 2>&1; then
+        echo "[setup] launchd service installed and loaded: ${plist_path}"
+      else
+        echo "[setup] warning: launchctl load failed. You can load manually:"
+        echo "  launchctl load ${plist_path}"
+      fi
+    else
+      echo "[setup] warning: launchctl not found. plist generated: ${plist_path}"
+    fi
+    return
+  fi
+
+  if [[ "${uname_s}" == "Linux" ]] && command -v systemctl >/dev/null 2>&1; then
+    local service_dir="${HOME}/.config/systemd/user"
+    local service_path="${service_dir}/mailhub-loop.service"
+    mkdir -p "${service_dir}"
+    cat > "${service_path}" <<SERVICE
+[Unit]
+Description=MailHub Standalone Loop
+After=network.target
+
+[Service]
+Type=simple
+Environment=MAILHUB_MODE=standalone
+Environment=MAILHUB_LOG_LEVEL=INFO
+ExecStart=${LAUNCHER} mail loop --interval-seconds ${interval}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+SERVICE
+    if systemctl --user daemon-reload >/dev/null 2>&1 && systemctl --user enable --now mailhub-loop.service >/dev/null 2>&1; then
+      echo "[setup] systemd user service installed and started: ${service_path}"
+    else
+      echo "[setup] warning: failed to enable/start systemd user service."
+      echo "  systemctl --user daemon-reload"
+      echo "  systemctl --user enable --now mailhub-loop.service"
+    fi
+    return
+  fi
+
+  echo "[setup] warning: unsupported platform/service manager for auto-install."
+  echo "[setup] run manually in background:"
+  echo "  ${LAUNCHER} mail loop --interval-seconds ${interval}"
+}
+
+if [[ "${MODE}" == "standalone" && "${INSTALL_SERVICE}" -eq 1 ]]; then
+  install_standalone_service "${LOOP_INTERVAL}"
+fi
+
 echo "[setup] done."

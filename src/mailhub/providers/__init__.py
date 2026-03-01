@@ -1,1 +1,0 @@
-# Providers implement auth + fetch/send for different services.

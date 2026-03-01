@@ -5,15 +5,15 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Tuple
 
-from ..config import Settings
-from ..store import DB
-from ..utils.time import utc_now_iso
-from ..providers.google_gmail import (
+from ..core.config import Settings
+from ..core.store import DB
+from ..shared.time import utc_now_iso
+from ..connectors.providers.google_gmail import (
     google_calendar_create_event,
     google_calendar_delete_event,
     google_calendar_list_events,
 )
-from ..providers.ms_graph import (
+from ..connectors.providers.ms_graph import (
     graph_calendar_agenda,
     graph_calendar_create_event,
     graph_calendar_delete_event,

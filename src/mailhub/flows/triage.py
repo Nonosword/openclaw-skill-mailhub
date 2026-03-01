@@ -8,11 +8,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from ..agent_bridge import classify_email_with_agent, summarize_bucket_with_agent
-from ..config import Settings
-from ..store import DB
-from ..utils.time import utc_now_iso, today_yyyy_mm_dd_utc
-from ..utils.html import html_to_text
+from ..core.agent_bridge import classify_email_with_agent, summarize_bucket_with_agent
+from ..core.config import Settings
+from ..core.store import DB
+from ..shared.time import utc_now_iso, today_yyyy_mm_dd_utc
+from ..shared.html import html_to_text
 
 
 def _load_yaml(path: Path) -> Dict[str, Any]:
@@ -328,7 +328,7 @@ def triage_day(date: str = "today") -> Dict[str, Any]:
         "total": len(messages),
         "tag_counts": counts,
         "overview": overview,
-        "reply_needed": reply_items[: s.toggles.reply_needed_max_items],
+        "reply_needed": reply_items[: s.mail.reply_needed_max_items],
         "analyzed_items": analyzed_items,
     }
 
@@ -401,5 +401,5 @@ def triage_suggest(since: str = "15m") -> Dict[str, Any]:
             }
         )
 
-    suggested = suggested[: s.toggles.suggest_max_items]
+    suggested = suggested[: s.mail.suggest_max_items]
     return {"day": day, "suggested": suggested}
